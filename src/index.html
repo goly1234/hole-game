@@ -30,6 +30,8 @@
   /* ---------- HUD ---------- */
   #hud { position:absolute; inset:0; }
   #timer { position:absolute; top:16px; left:50%; transform:translateX(-50%); padding:7px 24px; z-index:5; border-radius:22px; background:rgba(10,16,28,.72); border:1px solid rgba(255,255,255,.14); color:#fff; font-size:clamp(20px,2.6vw,30px); font-weight:700; font-variant-numeric:tabular-nums; letter-spacing:2px; }
+  #timer.urgent { color:#ff5470; border-color:#ff5470; animation:pulse .7s infinite alternate; }
+  @keyframes pulse { to { box-shadow:0 0 18px rgba(255,84,112,.7); } }
   #stageInfo { position:absolute; top:92px; left:18px; padding:5px 12px; border-radius:12px; background:rgba(10,16,28,.55); color:#ffd166; font-size:13px; white-space:nowrap; }
   #stageInfo b { color:#7fe3a0; }
   #endBtn { position:absolute; bottom:20px; right:20px; width:72px; height:40px; border-radius:20px; background:rgba(255,84,112,.28); border:1px solid rgba(255,84,112,.55); color:#ffd7de; font-size:14px; }

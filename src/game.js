@@ -9,8 +9,12 @@
   // ==================== 配置 ====================
   var CFG = {
     HOLE_BASE: 1.0,      // 初始半径
-    R_MAX: 25,           // 半径上限（饱和成长）
+    R_MAX: 25,           // 常规半径上限（饱和成长）
     GROW_K: 520,         // 成长半程点：exp=K 时半径约为上限一半
+    END_AT: 0.94,        // 半径达到上限的此比例触发终局决战
+    END_TIME: 30,        // 终局决战秒数，撑过即胜利
+    HUNTER_MUL: 1.32,    // 猎杀者相对玩家的体型倍率（吞不掉，只能躲）
+    HUNTER_RMAX: 40,     // 猎杀者允许突破的半径上限
     EAT_RATIO: 0.85,     // 吞噬尺寸比
     SPEED_BASE: 13,      // 基础速度
     SPEED_GROW: 0.55,    // 速度随半径增量
@@ -61,9 +65,11 @@
   var AUTO = QS.get('auto') === '1';                // 调试：自动觅食
   var DEBUG = QS.get('debug') === '1';              // 调试：暴露内部状态到 window.__hole
   var DEBUG_DIE = parseFloat(QS.get('die'));        // 调试：开局 N 秒后强制被吃，验证死亡结算
+  var DEBUG_END = QS.get('endgame') === '1';        // 调试：2 秒后强制进入终局决战
   var elapsed = 0, stage = 1, skinIdx = 0;
   var bestScore = 0, bestTime = 0;
   var shake = 0, deathT = 0, deathBy = '', rotateT = 0;
+  var endgame = false, endT = 0, victory = false;   // 终局决战状态
   var input = { active: false, sx: 0, sy: 0, dx: 0, dy: 0 };
   var keys = {};
   var tmpV = new THREE.Vector3();
@@ -423,14 +429,16 @@
     h.label.scale.set(6, 1.5, 1);
   }
 
-  // 饱和成长：渐进逼近 R_MAX，永不糊满屏幕
-  function radiusOf(exp) {
-    return CFG.HOLE_BASE + (CFG.R_MAX - CFG.HOLE_BASE) * exp / (exp + CFG.GROW_K);
+  // 饱和成长：渐进逼近上限，永不糊满屏幕（max 可覆盖，供猎杀者突破上限）
+  function radiusOf(exp, max) {
+    var m = max || CFG.R_MAX;
+    return CFG.HOLE_BASE + (m - CFG.HOLE_BASE) * exp / (exp + CFG.GROW_K);
   }
   // 反函数：由目标半径求所需经验
-  function expOf(radius) {
-    var r = clamp(radius, CFG.HOLE_BASE, CFG.R_MAX - 0.01);
-    var f = (r - CFG.HOLE_BASE) / (CFG.R_MAX - CFG.HOLE_BASE);
+  function expOf(radius, max) {
+    var m = max || CFG.R_MAX;
+    var r = clamp(radius, CFG.HOLE_BASE, m - 0.01);
+    var f = (r - CFG.HOLE_BASE) / (m - CFG.HOLE_BASE);
     return CFG.GROW_K * f / (1 - f);
   }
   function speedOf(h) {
@@ -487,6 +495,38 @@
     scene.remove(weak.group);
     holes.splice(wi, 1);
     spawnAI();
+  }
+
+  // 生成不受上限约束的猎杀者：体型是玩家的 1.3 倍，你吞不掉它，它能吞你
+  function spawnHunter(idx) {
+    var a = (idx / 3) * Math.PI * 2 + rnd(-0.3, 0.3);
+    var d = rnd(42, 60);
+    var targetR = clamp(player.radius * CFG.HUNTER_MUL, CFG.R_MAX, CFG.HUNTER_RMAX);
+    var h = makeHole('猎杀者', 0xff2d55, false,
+      player.x + Math.cos(a) * d, player.z + Math.sin(a) * d, 'aggressive');
+    h.exp = expOf(targetR, CFG.HUNTER_RMAX);
+    h.radius = radiusOf(h.exp, CFG.HUNTER_RMAX);
+    h.score = Math.floor(h.exp * 10);
+    h.hunter = true;
+    h.ai.chaseT = 999;   // 终局期间锁定追击玩家
+    syncHole(h);
+    holes.push(h);
+    return h;
+  }
+
+  // 进入终局决战：刷 3 个猎杀者围杀，30 秒倒计时
+  function startEndgame() {
+    if (endgame) return;
+    endgame = true;
+    endT = CFG.END_TIME;
+    // 清掉普通 AI，只留玩家和猎杀者，Focus 明确
+    for (var i = holes.length - 1; i >= 1; i--) {
+      scene.remove(holes[i].group);
+      holes.splice(i, 1);
+    }
+    for (var k = 0; k < 3; k++) spawnHunter(k);
+    killMsg('终局决战！撑过 30 秒即获胜');
+    beep(220, 0.5, 'sawtooth', 0.15);
   }
 
   // ==================== 吞噬 ====================
@@ -604,6 +644,19 @@
   }
 
   function respawnHole(h) {
+    if (h.hunter) {
+      // 猎杀者复活：始终比玩家大，继续围杀
+      var r = clamp(player.radius * CFG.HUNTER_MUL, CFG.R_MAX, CFG.HUNTER_RMAX);
+      var ang = rnd(0, Math.PI * 2), dd = rnd(42, 60);
+      h.x = player.x + Math.cos(ang) * dd;
+      h.z = player.z + Math.sin(ang) * dd;
+      h.exp = expOf(r, CFG.HUNTER_RMAX);
+      h.radius = radiusOf(h.exp, CFG.HUNTER_RMAX);
+      h.alive = true; h.group.visible = true;
+      syncHole(h);
+      if (h.ai) { h.ai.state = 'chase'; h.ai.chaseT = 999; h.ai.senseT = 0; }
+      return;
+    }
     // 复活也跟随玩家体型，保证永远有威胁而非送经验包
     var lo = 0.5 + stage * 0.02, hi = 0.95 + stage * 0.04;
     var ratio = clamp(rnd(lo, hi), 0.45, 1.35);
@@ -652,6 +705,13 @@
 
   function sense(h) {
     var ai = h.ai;
+    // 猎杀者：终局期间锁定玩家，不逃不觅食
+    if (h.hunter && player.alive) {
+      ai.state = 'chase';
+      ai.tx = player.x; ai.tz = player.z;
+      ai.chaseT = 999;
+      return;
+    }
     var warn = 26 + h.radius * 2.2;
     var threat = null, td = 1e9, prey = null, pd = 1e9;
     for (var i = 0; i < holes.length; i++) {
@@ -745,8 +805,14 @@
     setTimeout(function () { if (d.parentNode) d.parentNode.removeChild(d); }, 900);
   }
   function updateHUD() {
-    dom.timer.textContent = fmtTime(elapsed);
-    dom.stageLv.textContent = stage;
+    if (endgame) {
+      dom.timer.textContent = '终局 ' + Math.max(0, Math.ceil(endT)) + 's';
+      dom.timer.classList.add('urgent');
+    } else {
+      dom.timer.textContent = fmtTime(elapsed);
+      dom.timer.classList.remove('urgent');
+    }
+    dom.stageLv.textContent = endgame ? '决战' : stage;
     dom.aiCount.textContent = holes.length - 1;
     dom.mySize.textContent = player.radius.toFixed(1);
     dom.myScore.textContent = player.score;
@@ -763,8 +829,9 @@
   }
 
   function showResult() {
+    if (gameState === 'result') return;
     saveBest();
-    dom.finalRank.textContent = deathBy ? ('被 ' + deathBy + ' 吞噬') : '本局结束';
+    dom.finalRank.textContent = victory ? '你统治了城市！' : (deathBy ? ('被 ' + deathBy + ' 吞噬') : '本局结束');
     dom.finalTime.textContent = fmtTime(elapsed);
     dom.finalScore.textContent = player.score;
     dom.finalEaten.textContent = player.eaten;
@@ -788,6 +855,7 @@
     elapsed = 0;
     stage = (!isNaN(DEBUG_STAGE) && DEBUG_STAGE > 1) ? DEBUG_STAGE : 1;
     shake = 0; deathBy = ''; deathT = 0; rotateT = 18;
+    endgame = false; endT = 0; victory = false;
     gameState = 'play';
     dom.home.classList.add('hidden');
     dom.result.classList.add('hidden');
@@ -882,20 +950,35 @@
       if (!isNaN(DEBUG_DIE) && DEBUG_DIE > 0 && elapsed >= DEBUG_DIE && holes.length > 1) {
         devour(holes[1], player);
       }
-      var newStage = Math.floor(elapsed / CFG.STAGE_SEC) + 1;
-      if (newStage > stage) {
-        stage = newStage;
-        sfxStage();
-        killMsg('难度提升 · 第 ' + stage + ' 阶 · 新对手加入');
+      if (DEBUG_END && !endgame && elapsed >= 2 && player.alive) {
+        player.exp = expOf(CFG.R_MAX * CFG.END_AT + 0.3);
+        player.radius = radiusOf(player.exp);
+        player.score = Math.floor(player.exp * 10);
       }
-      // 按难度增加 AI
-      var wantAI = Math.min(CFG.AI_MAX, CFG.AI_START + stage - 1);
-      while (holes.length - 1 < wantAI) spawnAI();
-      // 定期淘汰最弱 AI，保持竞争强度
-      rotateT -= dt;
-      if (rotateT <= 0) {
-        rotateT = Math.max(9, 18 - stage * 0.6);
-        rotateWeakestAI();
+
+      if (endgame) {
+        // 终局决战：只倒计时，不再加人/换人
+        endT -= dt;
+        if (endT <= 0 && player.alive) {
+          victory = true;
+          showResult();
+        }
+      } else {
+        var newStage = Math.floor(elapsed / CFG.STAGE_SEC) + 1;
+        if (newStage > stage) {
+          stage = newStage;
+          sfxStage();
+          killMsg('难度提升 · 第 ' + stage + ' 阶 · 新对手加入');
+        }
+        var wantAI = Math.min(CFG.AI_MAX, CFG.AI_START + stage - 1);
+        while (holes.length - 1 < wantAI) spawnAI();
+        rotateT -= dt;
+        if (rotateT <= 0) {
+          rotateT = Math.max(9, 18 - stage * 0.6);
+          rotateWeakestAI();
+        }
+        // 逼近上限 → 触发终局决战（必然收场）
+        if (player.alive && player.radius >= CFG.R_MAX * CFG.END_AT) startEndgame();
       }
 
       var sp = speedOf(player);
