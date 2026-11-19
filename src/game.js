@@ -398,7 +398,7 @@
 
     var h = {
       name: name, color: color, isPlayer: !!isPlayer, x: x, z: z,
-      radius: CFG.HOLE_BASE, exp: 0, score: 0, eaten: 0, kills: 0,
+      radius: CFG.HOLE_BASE, maxR: CFG.R_MAX, exp: 0, score: 0, eaten: 0, kills: 0,
       alive: true, respawn: 0, group: grp, ring: ring, bottom: bottom, label: label,
       vx: 0, vz: 0,
       ai: isPlayer ? null : {
@@ -511,8 +511,9 @@
     var targetR = clamp(player.radius * CFG.HUNTER_MUL, CFG.R_MAX, CFG.HUNTER_RMAX);
     var h = makeHole('猎杀者', 0xff2d55, false,
       player.x + Math.cos(a) * d, player.z + Math.sin(a) * d, 'aggressive');
-    h.exp = expOf(targetR, CFG.HUNTER_RMAX);
-    h.radius = radiusOf(h.exp, CFG.HUNTER_RMAX);
+    h.maxR = CFG.HUNTER_RMAX;
+    h.exp = expOf(targetR, h.maxR);
+    h.radius = radiusOf(h.exp, h.maxR);
     h.score = Math.floor(h.exp * 10);
     h.hunter = true;
     h.ai.chaseT = 999;   // 终局期间锁定追击玩家
@@ -549,7 +550,7 @@
     hole.eaten++;
     hole.exp += obj.e;
     hole.score += obj.e * 10;
-    var nr = radiusOf(hole.exp);
+    var nr = radiusOf(hole.exp, hole.maxR);
     if (Math.floor(nr) > Math.floor(hole.radius)) sfxLevel();
     hole.radius = nr;
     sfxEat(obj.lv);
@@ -623,7 +624,7 @@
     eater.exp += victim.exp * 0.5;
     eater.score += 300 + Math.floor(victim.radius * 40);
     eater.kills++;
-    eater.radius = radiusOf(eater.exp);
+    eater.radius = radiusOf(eater.exp, eater.maxR);
     sfxKill();
     if (eater.isPlayer) {
       shake = 1.4;
@@ -657,8 +658,8 @@
       var ang = rnd(0, Math.PI * 2), dd = rnd(42, 60);
       h.x = player.x + Math.cos(ang) * dd;
       h.z = player.z + Math.sin(ang) * dd;
-      h.exp = expOf(r, CFG.HUNTER_RMAX);
-      h.radius = radiusOf(h.exp, CFG.HUNTER_RMAX);
+      h.exp = expOf(r, h.maxR);
+      h.radius = radiusOf(h.exp, h.maxR);
       h.alive = true; h.group.visible = true;
       syncHole(h);
       if (h.ai) { h.ai.state = 'chase'; h.ai.chaseT = 999; h.ai.senseT = 0; }
@@ -671,8 +672,8 @@
     var a = rnd(0, Math.PI * 2), d = rnd(45, 75);
     h.x = player.x + Math.cos(a) * d;
     h.z = player.z + Math.sin(a) * d;
-    h.exp = expOf(r);
-    h.radius = radiusOf(h.exp);
+    h.exp = expOf(r, h.maxR);
+    h.radius = radiusOf(h.exp, h.maxR);
     h.alive = true;
     h.group.visible = true;
     syncHole(h);

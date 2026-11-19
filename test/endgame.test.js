@@ -41,6 +41,17 @@ ok(!canEat(playerR, hunterR), '玩家吞不掉猎杀者');
 ok(hunterR <= CFG.HUNTER_RMAX, '猎杀者不超过其上限 40');
 ok(radiusOf(expOf(hunterR, CFG.HUNTER_RMAX), CFG.HUNTER_RMAX) - hunterR < 0.05, '猎杀者半径反推正确');
 
+console.log('== 回归：猎杀者吞物体后不得缩水 ==');
+// 旧 bug：exp 用 40 反推，半径却用默认 25 正算 → 从 31 骤降到 ~19，被玩家反吞
+var hunterExp = expOf(hunterR, CFG.HUNTER_RMAX);
+var buggyR = radiusOf(hunterExp);                 // 错误：默认上限 25
+var fixedR = radiusOf(hunterExp, CFG.HUNTER_RMAX); // 正确：用自身 maxR 40
+ok(buggyR < playerR, '复现旧 bug：错用上限会缩到玩家之下（' + buggyR.toFixed(1) + ' < ' + playerR.toFixed(1) + '）');
+ok(Math.abs(fixedR - hunterR) < 0.05, '修复后：用 maxR 重算保持 ' + fixedR.toFixed(1));
+// 模拟猎杀者吞一个物体（exp 增加）后仍大于玩家
+var afterEat = radiusOf(hunterExp + 50, CFG.HUNTER_RMAX);
+ok(afterEat > hunterR && canEat(afterEat, playerR), '吞物体后仍大于玩家且能吃玩家');
+
 console.log('== 必然收场 ==');
 ok(CFG.END_TIME > 0, '终局倒计时有限（' + CFG.END_TIME + 's）');
 ok(true, '撑过 30s → 胜利结算；被吃 → 死亡结算；两条路都进 result');
