@@ -9,7 +9,8 @@
   // ==================== 配置 ====================
   var CFG = {
     HOLE_BASE: 1.0,      // 初始半径
-    GROW: 0.32,          // 成长系数 radius = BASE + GROW*sqrt(exp)
+    R_MAX: 25,           // 半径上限（饱和成长）
+    GROW_K: 520,         // 成长半程点：exp=K 时半径约为上限一半
     EAT_RATIO: 0.85,     // 吞噬尺寸比
     SPEED_BASE: 13,      // 基础速度
     SPEED_GROW: 0.55,    // 速度随半径增量
@@ -59,9 +60,10 @@
   var DEBUG_STAGE = parseInt(QS.get('stage'), 10);  // 调试：直接从某难度开局
   var AUTO = QS.get('auto') === '1';                // 调试：自动觅食
   var DEBUG = QS.get('debug') === '1';              // 调试：暴露内部状态到 window.__hole
+  var DEBUG_DIE = parseFloat(QS.get('die'));        // 调试：开局 N 秒后强制被吃，验证死亡结算
   var elapsed = 0, stage = 1, skinIdx = 0;
   var bestScore = 0, bestTime = 0;
-  var shake = 0;
+  var shake = 0, deathT = 0, deathBy = '', rotateT = 0;
   var input = { active: false, sx: 0, sy: 0, dx: 0, dy: 0 };
   var keys = {};
   var tmpV = new THREE.Vector3();
@@ -421,7 +423,16 @@
     h.label.scale.set(6, 1.5, 1);
   }
 
-  function radiusOf(exp) { return CFG.HOLE_BASE + CFG.GROW * Math.sqrt(exp); }
+  // 饱和成长：渐进逼近 R_MAX，永不糊满屏幕
+  function radiusOf(exp) {
+    return CFG.HOLE_BASE + (CFG.R_MAX - CFG.HOLE_BASE) * exp / (exp + CFG.GROW_K);
+  }
+  // 反函数：由目标半径求所需经验
+  function expOf(radius) {
+    var r = clamp(radius, CFG.HOLE_BASE, CFG.R_MAX - 0.01);
+    var f = (r - CFG.HOLE_BASE) / (CFG.R_MAX - CFG.HOLE_BASE);
+    return CFG.GROW_K * f / (1 - f);
+  }
   function speedOf(h) {
     var s = CFG.SPEED_BASE + h.radius * CFG.SPEED_GROW;
     if (h.ai && h.ai.type === 'calm') s *= 0.78;
@@ -446,8 +457,11 @@
     var color = AI_COLORS[idx % AI_COLORS.length];
     var h = makeHole(name, color, false,
       player.x + Math.cos(a) * d, player.z + Math.sin(a) * d, aiTypeFor(idx));
-    // 新 AI 给一点初始体型，避免开局被秒（随难度提升初始经验）
-    h.exp = rnd(4, 10) + stage * 1.5;
+    // 体型跟随玩家：永远有比你大的威胁和比你小的猎物
+    var lo = 0.35 + stage * 0.02, hi = 0.95 + stage * 0.04;
+    var ratio = clamp(rnd(lo, hi), 0.35, 1.35);
+    var targetR = clamp(player.radius * ratio, 0.8, CFG.R_MAX - 0.5);
+    h.exp = expOf(targetR);
     h.radius = radiusOf(h.exp);
     h.score = Math.floor(h.exp * 10);
     syncHole(h);
@@ -459,6 +473,20 @@
     player = makeHole('你', SKINS[skinIdx], true, 0, 0);
     holes.push(player);
     for (var i = 0; i < CFG.AI_START; i++) spawnAI();
+  }
+
+  // 淘汰最弱 AI 并按玩家当前体型补一个，避免老 AI 变成固定经验包
+  function rotateWeakestAI() {
+    var weak = null, wi = -1, ws = 1e18;
+    for (var i = 1; i < holes.length; i++) {
+      var h = holes[i];
+      if (!h.alive || h.score >= ws) continue;
+      ws = h.score; weak = h; wi = i;
+    }
+    if (!weak) return;
+    scene.remove(weak.group);
+    holes.splice(wi, 1);
+    spawnAI();
   }
 
   // ==================== 吞噬 ====================
@@ -491,9 +519,9 @@
       if (!o.alive || o.lv < 2) continue;
       var d = Math.hypot(o.x - px, o.z - pz);
       var want = 1;
-      if (o.lv === 2 && d < pr + 4) want = 0.55;
-      else if (o.lv === 3 && d < pr + 7) want = 0.34;
-      else if (o.lv === 4 && d < pr + 11) want = 0.22;
+      if (o.lv === 2 && d < pr + 4) want = 0.6;
+      else if (o.lv === 3 && d < pr + 7) want = 0.5;
+      else if (o.lv === 4 && d < pr + 11) want = 0.42;
       o.mesh.scale.y = lerp(o.mesh.scale.y, want, 1 - Math.pow(0.002, dt));
     }
   }
@@ -544,6 +572,7 @@
   }
 
   function devour(eater, victim) {
+    victim.lastKiller = eater.isPlayer ? '你' : eater.name;
     eater.exp += victim.exp * 0.5;
     eater.score += 300 + Math.floor(victim.radius * 40);
     eater.kills++;
@@ -564,19 +593,26 @@
   function killVictim(v) {
     v.alive = false;
     v.group.visible = false;
-    v.respawn = 3;
+    if (v.isPlayer) {
+      // 一命制：玩家被吞噬 → 死亡过渡 → 结算，不复活
+      gameState = 'dying';
+      deathT = 1.3;
+      deathBy = v.lastKiller || '对手';
+    } else {
+      v.respawn = 3;
+    }
   }
 
   function respawnHole(h) {
-    var avg = 0, n = 0;
-    holes.forEach(function (o) { if (o.alive) { avg += o.radius; n++; } });
-    avg = n ? avg / n : 1;
-    var r = Math.max(CFG.HOLE_BASE, avg * 0.5);
-    var a = rnd(0, Math.PI * 2), d = rnd(40, 70);
+    // 复活也跟随玩家体型，保证永远有威胁而非送经验包
+    var lo = 0.5 + stage * 0.02, hi = 0.95 + stage * 0.04;
+    var ratio = clamp(rnd(lo, hi), 0.45, 1.35);
+    var r = clamp(player.radius * ratio, 0.8, CFG.R_MAX - 0.5);
+    var a = rnd(0, Math.PI * 2), d = rnd(45, 75);
     h.x = player.x + Math.cos(a) * d;
     h.z = player.z + Math.sin(a) * d;
-    h.exp = Math.pow((r - CFG.HOLE_BASE) / CFG.GROW, 2);
-    h.radius = r;
+    h.exp = expOf(r);
+    h.radius = radiusOf(h.exp);
     h.alive = true;
     h.group.visible = true;
     syncHole(h);
@@ -728,7 +764,7 @@
 
   function showResult() {
     saveBest();
-    dom.finalRank.textContent = '本局结束';
+    dom.finalRank.textContent = deathBy ? ('被 ' + deathBy + ' 吞噬') : '本局结束';
     dom.finalTime.textContent = fmtTime(elapsed);
     dom.finalScore.textContent = player.score;
     dom.finalEaten.textContent = player.eaten;
@@ -751,7 +787,7 @@
     updateChunks();
     elapsed = 0;
     stage = (!isNaN(DEBUG_STAGE) && DEBUG_STAGE > 1) ? DEBUG_STAGE : 1;
-    shake = 0;
+    shake = 0; deathBy = ''; deathT = 0; rotateT = 18;
     gameState = 'play';
     dom.home.classList.add('hidden');
     dom.result.classList.add('hidden');
@@ -843,6 +879,9 @@
 
     if (gameState === 'play') {
       elapsed += dt;
+      if (!isNaN(DEBUG_DIE) && DEBUG_DIE > 0 && elapsed >= DEBUG_DIE && holes.length > 1) {
+        devour(holes[1], player);
+      }
       var newStage = Math.floor(elapsed / CFG.STAGE_SEC) + 1;
       if (newStage > stage) {
         stage = newStage;
@@ -852,6 +891,12 @@
       // 按难度增加 AI
       var wantAI = Math.min(CFG.AI_MAX, CFG.AI_START + stage - 1);
       while (holes.length - 1 < wantAI) spawnAI();
+      // 定期淘汰最弱 AI，保持竞争强度
+      rotateT -= dt;
+      if (rotateT <= 0) {
+        rotateT = Math.max(9, 18 - stage * 0.6);
+        rotateWeakestAI();
+      }
 
       var sp = speedOf(player);
       player.vx = input.dx * sp;
@@ -888,20 +933,20 @@
       updateCamera(dt);
       updateHUD();
 
+      // 只让 AI 复活；玩家被吃走 dying 分支
       for (var r = 0; r < holes.length; r++) {
         var v = holes[r];
-        if (!v.alive) {
+        if (!v.alive && !v.isPlayer) {
           v.respawn -= dt;
-          if (v.isPlayer) {
-            dom.respawn.classList.remove('hidden');
-            dom.respawnNum.textContent = Math.max(1, Math.ceil(v.respawn));
-          }
-          if (v.respawn <= 0) {
-            respawnHole(v);
-            if (v.isPlayer) dom.respawn.classList.add('hidden');
-          }
+          if (v.respawn <= 0) respawnHole(v);
         }
       }
+    } else if (gameState === 'dying') {
+      // 死亡过渡：镜头停留一下再结算
+      deathT -= dt;
+      updateFalls(dt);
+      updateCamera(dt);
+      if (deathT <= 0) showResult();
     } else if (gameState === 'home') {
       if (player) { player.group.rotation.y += dt * 0.15; player.group.position.x = Math.sin(clock.elapsedTime * 0.4) * 4; }
     } else if (gameState === 'result') {
