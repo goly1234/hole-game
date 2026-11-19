@@ -5,6 +5,9 @@ node_modules/
 www/
 /index.html
 
+# 出包产物（本地保留，不入库）
+/releases/
+
 # Capacitor 同步产物
 android/app/src/main/assets/public/
 
