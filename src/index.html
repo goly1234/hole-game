@@ -17,22 +17,24 @@
   .btn { pointer-events:auto; display:flex; align-items:center; justify-content:center; cursor:pointer; font-weight:600; letter-spacing:1px; border:none; color:#fff; transition:transform .08s, filter .12s; }
   .btn:active { transform:scale(.96); filter:brightness(1.15); }
 
-  /* ---------- 主界面 ---------- */
-  #home { position:absolute; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:26px; pointer-events:auto; background:radial-gradient(circle at 50% 40%, #16243b 0%, #0a0d14 70%); }
-  #home h1 { font-size:clamp(30px,5vw,54px); color:#fff; text-shadow:0 0 24px rgba(90,180,255,.6); letter-spacing:3px; }
-  #home .sub { color:#8fa6c4; font-size:clamp(13px,1.6vw,17px); margin-top:-14px; }
-  .skin-row { display:flex; align-items:center; gap:20px; }
-  .skin-arrow { width:46px; height:46px; border-radius:50%; background:rgba(255,255,255,.1); font-size:26px; color:#fff; }
-  #skinDot { width:80px; height:80px; border-radius:50%; border:4px solid rgba(255,255,255,.85); box-shadow:0 0 26px currentColor; }
-  #startBtn { margin-top:6px; width:min(320px,70vw); height:64px; border-radius:32px; font-size:22px; background:linear-gradient(135deg,#3a86ff,#8338ec); box-shadow:0 8px 28px rgba(58,134,255,.45); }
-  .tips { color:#5f7391; font-size:13px; margin-top:4px; text-align:center; line-height:1.7; }
+  /* ---------- 主界面（横屏扁平：左右分栏） ---------- */
+  #home { position:absolute; inset:0; display:flex; flex-direction:row; align-items:center; justify-content:center; gap:clamp(30px,6vw,90px); pointer-events:auto; background:radial-gradient(circle at 50% 45%, #16243b 0%, #0a0d14 70%); padding:4vw; }
+  .home-left { display:flex; flex-direction:column; gap:12px; }
+  #home h1 { font-size:clamp(28px,4.4vw,52px); color:#fff; text-shadow:0 0 24px rgba(90,180,255,.6); letter-spacing:3px; white-space:nowrap; }
+  #home .sub { color:#8fa6c4; font-size:clamp(12px,1.4vw,16px); }
+  .tips { color:#5f7391; font-size:clamp(11px,1.1vw,14px); line-height:1.9; }
+  .home-right { display:flex; flex-direction:column; align-items:center; gap:14px; }
+  .skin-row { display:flex; align-items:center; gap:14px; }
+  .skin-arrow { width:40px; height:40px; border-radius:50%; background:rgba(255,255,255,.1); font-size:24px; color:#fff; }
+  #skinDot { width:64px; height:64px; border-radius:50%; border:4px solid rgba(255,255,255,.85); box-shadow:0 0 26px currentColor; }
+  #startBtn { width:min(300px,30vw); min-width:180px; height:clamp(48px,6vh,60px); border-radius:30px; font-size:clamp(18px,2vw,22px); background:linear-gradient(135deg,#3a86ff,#8338ec); box-shadow:0 8px 28px rgba(58,134,255,.45); }
 
   /* ---------- HUD ---------- */
   #hud { position:absolute; inset:0; }
   #timer { position:absolute; top:16px; left:50%; transform:translateX(-50%); padding:7px 24px; z-index:5; border-radius:22px; background:rgba(10,16,28,.72); border:1px solid rgba(255,255,255,.14); color:#fff; font-size:clamp(20px,2.6vw,30px); font-weight:700; font-variant-numeric:tabular-nums; letter-spacing:2px; }
   #timer.urgent { color:#ff5470; border-color:#ff5470; animation:pulse .7s infinite alternate; }
   @keyframes pulse { to { box-shadow:0 0 18px rgba(255,84,112,.7); } }
-  #stageInfo { position:absolute; top:92px; left:18px; padding:5px 12px; border-radius:12px; background:rgba(10,16,28,.55); color:#ffd166; font-size:13px; white-space:nowrap; }
+  #stageInfo { position:absolute; top:62px; left:18px; padding:4px 10px; border-radius:10px; background:rgba(10,16,28,.55); color:#ffd166; font-size:12px; white-space:nowrap; }
   #stageInfo b { color:#7fe3a0; }
   #endBtn { position:absolute; bottom:20px; right:20px; width:72px; height:40px; border-radius:20px; background:rgba(255,84,112,.28); border:1px solid rgba(255,84,112,.55); color:#ffd7de; font-size:14px; }
   #board { position:absolute; top:18px; right:18px; width:190px; padding:10px 12px; border-radius:12px; background:rgba(10,16,28,.66); border:1px solid rgba(255,255,255,.12); }
@@ -43,8 +45,9 @@
   .row .dot { width:10px; height:10px; border-radius:50%; flex:none; }
   .row .nm { flex:1; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
   .row .sc { font-variant-numeric:tabular-nums; color:#fff; }
-  #myStat { position:absolute; top:18px; left:18px; padding:8px 14px; border-radius:12px; background:rgba(10,16,28,.66); border:1px solid rgba(255,255,255,.12); color:#dfe8f5; font-size:13px; line-height:1.6; }
-  #myStat b { color:#7fe3a0; font-variant-numeric:tabular-nums; }
+  #myStat { position:absolute; top:18px; left:18px; padding:7px 12px; border-radius:12px; background:rgba(10,16,28,.66); border:1px solid rgba(255,255,255,.12); color:#9db; font-size:12px; white-space:nowrap; }
+  #myStat b { color:#7fe3a0; font-variant-numeric:tabular-nums; font-size:15px; margin:0 10px 0 3px; }
+  #myStat span { color:#6b829e; }
   #killfeed { position:absolute; top:76px; left:50%; transform:translateX(-50%); display:flex; flex-direction:column; gap:6px; align-items:center; }
   .killmsg { padding:6px 16px; border-radius:18px; background:rgba(255,60,90,.82); color:#fff; font-size:14px; animation:kf 3s forwards; white-space:nowrap; }
   @keyframes kf { 0%{opacity:0;transform:translateY(-8px)} 12%{opacity:1;transform:none} 80%{opacity:1} 100%{opacity:0} }
@@ -57,17 +60,17 @@
   #joystick { position:absolute; width:96px; height:96px; border-radius:50%; border:2px solid rgba(255,255,255,.35); background:rgba(255,255,255,.06); display:none; transform:translate(-50%,-50%); }
   #joystick i { position:absolute; left:50%; top:50%; width:42px; height:42px; border-radius:50%; background:rgba(255,255,255,.4); transform:translate(-50%,-50%); }
 
-  /* ---------- 结算 ---------- */
-  #result { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; background:rgba(6,9,15,.7); }
-  #result .card { width:min(420px,86vw); padding:30px; text-align:center; }
-  #result .rk { font-size:clamp(38px,6vw,60px); font-weight:800; color:#ffd166; }
-  #result .rk small { font-size:20px; color:#fff; }
-  #result .stats { margin:20px 0; display:grid; grid-template-columns:1fr 1fr; gap:12px; }
-  #result .st { background:rgba(255,255,255,.06); border-radius:10px; padding:12px; }
-  #result .st b { display:block; font-size:26px; color:#7fe3a0; }
-  #result .st span { font-size:12px; color:#9db; }
-  #result .btns { display:flex; gap:12px; }
-  #result .btn { flex:1; height:52px; border-radius:12px; font-size:16px; }
+  /* ---------- 结算（横屏扁平：宽卡 + 一行统计） ---------- */
+  #result { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; background:rgba(6,9,15,.7); padding:3vw; }
+  #result .card { width:min(1100px,94vw); padding:clamp(16px,2.4vh,28px) clamp(20px,3vw,40px); text-align:center; }
+  #result .rk { font-size:clamp(30px,4.4vw,52px); font-weight:800; color:#ffd166; line-height:1.2; }
+  #result .rk small { font-size:18px; color:#fff; }
+  #result .stats { margin:clamp(12px,2vh,20px) 0; display:grid; grid-template-columns:repeat(6,1fr); gap:clamp(6px,1vw,14px); }
+  #result .st { background:rgba(255,255,255,.06); border-radius:10px; padding:clamp(8px,1.4vh,14px) 6px; }
+  #result .st b { display:block; font-size:clamp(18px,2.4vw,30px); color:#7fe3a0; font-variant-numeric:tabular-nums; }
+  #result .st span { font-size:clamp(10px,1vw,13px); color:#9db; }
+  #result .btns { display:flex; gap:12px; justify-content:center; }
+  #result .btn { flex:1; max-width:260px; height:clamp(42px,5.5vh,54px); border-radius:12px; font-size:clamp(14px,1.6vw,17px); }
   #againBtn { background:linear-gradient(135deg,#3a86ff,#8338ec); }
   #homeBtn { background:rgba(255,255,255,.12); }
 </style>
@@ -77,22 +80,26 @@
 <div id="ui">
   <!-- 主界面 -->
   <div id="home">
-    <h1>黑洞吞噬大作战</h1>
-    <div class="sub">HOLE.IO · 单机人机竞技</div>
-    <div class="skin-row">
-      <div class="btn skin-arrow" id="skinPrev">‹</div>
-      <div id="skinDot"></div>
-      <div class="btn skin-arrow" id="skinNext">›</div>
+    <div class="home-left">
+      <h1>黑洞吞噬大作战</h1>
+      <div class="sub">HOLE.IO · 单机人机竞技</div>
+      <div class="tips">按住屏幕任意位置拖动操控黑洞<br>一命制 · 被吞噬即结束，活到最后一刻<br>历史最高存活 <b id="homeBest">00:00</b></div>
     </div>
-    <div class="btn" id="startBtn">开始游戏</div>
-    <div class="tips">按住屏幕任意位置拖动操控黑洞<br>一命制 · 被吞噬即结束，活到最后一刻<br>历史最高存活 <b id="homeBest">00:00</b></div>
+    <div class="home-right">
+      <div class="skin-row">
+        <div class="btn skin-arrow" id="skinPrev">‹</div>
+        <div id="skinDot"></div>
+        <div class="btn skin-arrow" id="skinNext">›</div>
+      </div>
+      <div class="btn" id="startBtn">开始游戏</div>
+    </div>
   </div>
 
   <!-- 战斗 HUD -->
   <div id="hud" class="hidden">
     <div id="timer">00:00</div>
     <div id="stageInfo">难度 <b id="stageLv">1</b> · 对手 <b id="aiCount">7</b></div>
-    <div id="myStat">体积 <b id="mySize">1.0</b><br>得分 <b id="myScore">0</b><br>最高 <b id="bestScore">0</b></div>
+    <div id="myStat"><span>体积</span><b id="mySize">1.0</b><span>得分</span><b id="myScore">0</b><span>最高</span><b id="bestScore">0</b></div>
     <div class="btn" id="endBtn">结束</div>
     <div id="board"><div class="bt">实时排行</div><div id="boardRows"></div></div>
     <div id="killfeed"></div>

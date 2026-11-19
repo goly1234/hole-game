@@ -66,6 +66,7 @@
   var DEBUG = QS.get('debug') === '1';              // 调试：暴露内部状态到 window.__hole
   var DEBUG_DIE = parseFloat(QS.get('die'));        // 调试：开局 N 秒后强制被吃，验证死亡结算
   var DEBUG_END = QS.get('endgame') === '1';        // 调试：2 秒后强制进入终局决战
+  var DEBUG_RESULT = QS.get('result') === '1';      // 调试：直接显示结算页（看布局用）
   var elapsed = 0, stage = 1, skinIdx = 0;
   var bestScore = 0, bestTime = 0;
   var shake = 0, deathT = 0, deathBy = '', rotateT = 0;
@@ -145,7 +146,12 @@
     updateSkin();
     loadBest();
     loop();
-    dom.home.classList.remove('hidden');
+    if (DEBUG_RESULT) {
+      dom.home.classList.add('hidden');
+      showResult();
+    } else {
+      dom.home.classList.remove('hidden');
+    }
   }
 
   function onResize() {
@@ -479,6 +485,7 @@
 
   function spawnHoles() {
     player = makeHole('你', SKINS[skinIdx], true, 0, 0);
+    if (player.label) player.label.visible = true;
     holes.push(player);
     for (var i = 0; i < CFG.AI_START; i++) spawnAI();
   }
@@ -880,6 +887,8 @@
       player = makeHole('你', SKINS[skinIdx], true, 0, 0);
       holes.push(player);
     }
+    // 预览/结算时隐藏玩家标签，避免 ▼ 标记飘在 UI 上
+    if (player.label) player.label.visible = false;
     camera.position.set(0, 26, 30);
     camera.lookAt(0, 0, 0);
   }
