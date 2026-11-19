@@ -30,8 +30,9 @@
   /* ---------- HUD ---------- */
   #hud { position:absolute; inset:0; }
   #timer { position:absolute; top:16px; left:50%; transform:translateX(-50%); padding:7px 24px; z-index:5; border-radius:22px; background:rgba(10,16,28,.72); border:1px solid rgba(255,255,255,.14); color:#fff; font-size:clamp(20px,2.6vw,30px); font-weight:700; font-variant-numeric:tabular-nums; letter-spacing:2px; }
-  #timer.urgent { color:#ff5470; border-color:#ff5470; animation:pulse .7s infinite alternate; }
-  @keyframes pulse { to { box-shadow:0 0 18px rgba(255,84,112,.7); } }
+  #stageInfo { position:absolute; top:92px; left:18px; padding:5px 12px; border-radius:12px; background:rgba(10,16,28,.55); color:#ffd166; font-size:13px; white-space:nowrap; }
+  #stageInfo b { color:#7fe3a0; }
+  #endBtn { position:absolute; bottom:20px; right:20px; width:72px; height:40px; border-radius:20px; background:rgba(255,84,112,.28); border:1px solid rgba(255,84,112,.55); color:#ffd7de; font-size:14px; }
   #board { position:absolute; top:18px; right:18px; width:190px; padding:10px 12px; border-radius:12px; background:rgba(10,16,28,.66); border:1px solid rgba(255,255,255,.12); }
   #board .bt { color:#8fa6c4; font-size:12px; margin-bottom:6px; letter-spacing:1px; }
   .row { display:flex; align-items:center; gap:8px; font-size:13px; color:#dfe8f5; padding:3px 0; }
@@ -82,13 +83,15 @@
       <div class="btn skin-arrow" id="skinNext">›</div>
     </div>
     <div class="btn" id="startBtn">开始游戏</div>
-    <div class="tips">按住屏幕任意位置拖动操控黑洞<br>吞噬比自己小的物体和对手，2 分钟争夺第一</div>
+    <div class="tips">按住屏幕任意位置拖动操控黑洞<br>无尽吞噬，场地不断扩张，对手越来越多<br>历史最高存活 <b id="homeBest">00:00</b></div>
   </div>
 
   <!-- 战斗 HUD -->
   <div id="hud" class="hidden">
-    <div id="timer">02:00</div>
-    <div id="myStat">体积 <b id="mySize">1.0</b><br>得分 <b id="myScore">0</b></div>
+    <div id="timer">00:00</div>
+    <div id="stageInfo">难度 <b id="stageLv">1</b> · 对手 <b id="aiCount">7</b></div>
+    <div id="myStat">体积 <b id="mySize">1.0</b><br>得分 <b id="myScore">0</b><br>最高 <b id="bestScore">0</b></div>
+    <div class="btn" id="endBtn">结束</div>
     <div id="board"><div class="bt">实时排行</div><div id="boardRows"></div></div>
     <div id="killfeed"></div>
     <div id="floaters"></div>
@@ -99,11 +102,13 @@
   <!-- 结算 -->
   <div id="result" class="hidden">
     <div class="card panel">
-      <div class="rk" id="finalRank">第 1 名<small>！</small></div>
+      <div class="rk" id="finalRank">本局结束</div>
       <div class="stats">
+        <div class="st"><b id="finalTime">00:00</b><span>存活时长</span></div>
         <div class="st"><b id="finalScore">0</b><span>最终得分</span></div>
         <div class="st"><b id="finalEaten">0</b><span>吞噬物体</span></div>
         <div class="st"><b id="finalKills">0</b><span>击杀对手</span></div>
+        <div class="st"><b id="finalStage">1</b><span>到达难度</span></div>
         <div class="st"><b id="finalSize">1.0</b><span>最终半径</span></div>
       </div>
       <div class="btns">

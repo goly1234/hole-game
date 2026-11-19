@@ -1,24 +1,28 @@
-/* 黑洞吞噬大作战 - 单机人机版
+/* 黑洞吞噬大作战 - 单机人机 · 无尽模式
  * 横屏 / Three.js r128 / 无外部资源 / 离线可运行
- * 核心方案：地面 shader 挖孔 + 运动学下坠，物体超出洞口的部分被地面深度遮挡，不穿模
+ * 核心方案：地面 shader 挖孔 + 运动学下坠；无限地图用区块动态生成/回收
+ * 无尽：无倒计时，存活越久难度越高，场地随玩家扩张，AI 逐渐增多（上限 16）
  */
 (function () {
   'use strict';
 
   // ==================== 配置 ====================
   var CFG = {
-    MAP: 200,            // 地图边长
-    ROUND: 120,          // 单局秒数
     HOLE_BASE: 1.0,      // 初始半径
     GROW: 0.32,          // 成长系数 radius = BASE + GROW*sqrt(exp)
     EAT_RATIO: 0.85,     // 吞噬尺寸比
     SPEED_BASE: 13,      // 基础速度
     SPEED_GROW: 0.55,    // 速度随半径增量
-    COUNT: 520,          // 场景物体总数
-    AI_NUM: 7
+    CHUNK: 60,           // 区块边长
+    CHUNK_RADIUS: 1,     // 维护玩家周围 ±N 圈区块（3x3）
+    PER_CHUNK: 55,       // 每区块物体数
+    MAX_HOLES: 20,       // shader 洞上限
+    AI_START: 7,         // 初始 AI 数
+    AI_MAX: 15,          // AI 上限
+    STAGE_SEC: 25        // 每存活多少秒升一级难度
   };
 
-  // 物体等级：[尺寸半径, 经验, 需要洞半径, 颜色组, 占比]
+  // 物体等级：[尺寸半径, 经验, 需要洞半径, 颜色组, 基础占比]
   var LV = [
     { s: 0.6,  e: 1,  need: 1.0,  p: 0.40, c: [0x9aa7b5, 0xd9534f, 0x8b6f47] },
     { s: 1.5,  e: 3,  need: 2.0,  p: 0.30, c: [0x4aa3df, 0x5cb85c, 0xe0a030] },
@@ -28,8 +32,10 @@
   ];
 
   var SKINS = [0x4cc9f0, 0xf72585, 0xffd166, 0x06d6a0, 0xb388ff, 0xff6b6b, 0x64dfdf];
-  var AI_NAMES = ['路人甲', '黑洞侠', '贪吃鬼', '小霸王', '路人乙', '吞天兽', '无敌手', '追风者', '大胃王'];
-  var AI_COLORS = [0xff6b6b, 0xffd166, 0x06d6a0, 0xb388ff, 0xf72585, 0x4cc9f0, 0xfa7d09];
+  var AI_NAMES = ['路人甲', '黑洞侠', '贪吃鬼', '小霸王', '路人乙', '吞天兽', '无敌手', '追风者', '大胃王',
+    '小旋风', '铁胃', '闪电', '巨无霸', '夜行者', '贪狼', '碎星', '黑洞王', '飓风'];
+  var AI_COLORS = [0xff6b6b, 0xffd166, 0x06d6a0, 0xb388ff, 0xf72585, 0x4cc9f0, 0xfa7d09,
+    0xa3e635, 0xf472b6, 0x38bdf8, 0xfb923c, 0x818cf8, 0x34d399, 0xe879f9, 0xfacc15, 0x60a5fa];
 
   // ==================== 工具 ====================
   function rnd(a, b) { return a + Math.random() * (b - a); }
@@ -38,32 +44,51 @@
   function lerp(a, b, t) { return a + (b - a) * t; }
   function pick(arr) { return arr[Math.floor(Math.random() * arr.length)]; }
   function hex(n) { return '#' + ('000000' + n.toString(16)).slice(-6); }
+  function fmtTime(sec) {
+    sec = Math.max(0, Math.floor(sec));
+    return ('0' + Math.floor(sec / 60)).slice(-2) + ':' + ('0' + (sec % 60)).slice(-2);
+  }
 
   // ==================== 状态 ====================
   var renderer, scene, camera, ground, groundMat;
   var objects = [], holes = [], player;
-  var raycaster = new THREE.Raycaster();
+  var chunks = {};               // key "cx,cz" -> {objs:[obj,...]}
   var clock = new THREE.Clock();
-  var gameState = 'home'; // home | play | respawn | result
-  // 调试参数：?t=秒数 缩短单局；?auto=1 玩家自动觅食（不带参数时对正式游戏无影响）
+  var gameState = 'home';        // home | play | result
   var QS = new URLSearchParams(location.search);
-  var DEBUG_T = parseFloat(QS.get('t'));
-  var AUTO = QS.get('auto') === '1';
-  var timeLeft = CFG.ROUND, skinIdx = 0;
-  var shake = 0, lastTick = -1;
+  var DEBUG_STAGE = parseInt(QS.get('stage'), 10);  // 调试：直接从某难度开局
+  var AUTO = QS.get('auto') === '1';                // 调试：自动觅食
+  var DEBUG = QS.get('debug') === '1';              // 调试：暴露内部状态到 window.__hole
+  var elapsed = 0, stage = 1, skinIdx = 0;
+  var bestScore = 0, bestTime = 0;
+  var shake = 0;
   var input = { active: false, sx: 0, sy: 0, dx: 0, dy: 0 };
   var keys = {};
   var tmpV = new THREE.Vector3();
   var holeUniform = { uHoles: { value: [] }, uHoleCount: { value: 0 } };
-  for (var i = 0; i < 8; i++) holeUniform.uHoles.value.push(new THREE.Vector3());
+  for (var i = 0; i < CFG.MAX_HOLES; i++) holeUniform.uHoles.value.push(new THREE.Vector3());
 
   // ==================== DOM ====================
   var $ = function (id) { return document.getElementById(id); };
   var dom = {};
-  ['home', 'hud', 'result', 'timer', 'mySize', 'myScore', 'boardRows', 'killfeed',
-    'floaters', 'respawn', 'respawnNum', 'skinDot', 'startBtn', 'skinPrev', 'skinNext',
-    'finalRank', 'finalScore', 'finalEaten', 'finalKills', 'finalSize', 'againBtn',
-    'homeBtn', 'joystick'].forEach(function (k) { dom[k] = $(k); });
+  ['home', 'hud', 'result', 'timer', 'stageLv', 'aiCount', 'mySize', 'myScore', 'bestScore',
+    'homeBest', 'boardRows', 'killfeed', 'floaters', 'respawn', 'respawnNum', 'skinDot',
+    'startBtn', 'endBtn', 'skinPrev', 'skinNext', 'finalRank', 'finalTime', 'finalScore',
+    'finalEaten', 'finalKills', 'finalStage', 'finalSize', 'againBtn', 'homeBtn', 'joystick'
+  ].forEach(function (k) { dom[k] = $(k); });
+
+  // ==================== 存档 ====================
+  function loadBest() {
+    try {
+      bestScore = parseInt(localStorage.getItem('hole_best_score') || '0', 10) || 0;
+      bestTime = parseInt(localStorage.getItem('hole_best_time') || '0', 10) || 0;
+    } catch (e) { bestScore = 0; bestTime = 0; }
+    if (dom.homeBest) dom.homeBest.textContent = fmtTime(bestTime);
+  }
+  function saveBest() {
+    if (player.score > bestScore) { bestScore = player.score; try { localStorage.setItem('hole_best_score', bestScore); } catch (e) {} }
+    if (elapsed > bestTime) { bestTime = elapsed; try { localStorage.setItem('hole_best_time', bestTime); } catch (e) {} }
+  }
 
   // ==================== 音效 ====================
   var actx = null;
@@ -83,8 +108,8 @@
   }
   function sfxEat(lv) { beep(420 + lv * 130, 0.09, 'sine', 0.10); }
   function sfxKill() { beep(180, 0.18, 'square', 0.10); setTimeout(function () { beep(300, 0.22, 'square', 0.09); }, 90); }
-  function sfxTick() { beep(900, 0.05, 'triangle', 0.08); }
   function sfxLevel() { beep(520, 0.16, 'triangle', 0.12); setTimeout(function () { beep(780, 0.18, 'triangle', 0.1); }, 100); }
+  function sfxStage() { beep(440, 0.14, 'sawtooth', 0.1); setTimeout(function () { beep(660, 0.16, 'sawtooth', 0.1); }, 120); setTimeout(function () { beep(880, 0.2, 'sawtooth', 0.1); }, 240); }
 
   // ==================== 初始化 ====================
   function init() {
@@ -95,9 +120,9 @@
     $('game').appendChild(renderer.domElement);
 
     scene = new THREE.Scene();
-    scene.fog = new THREE.Fog(0x0a0e15, 90, 220);
+    scene.fog = new THREE.Fog(0x0a0e15, 100, 260);
 
-    camera = new THREE.PerspectiveCamera(52, window.innerWidth / window.innerHeight, 0.5, 600);
+    camera = new THREE.PerspectiveCamera(52, window.innerWidth / window.innerHeight, 0.5, 700);
 
     scene.add(new THREE.AmbientLight(0xffffff, 0.72));
     var dir = new THREE.DirectionalLight(0xffffff, 0.75);
@@ -105,13 +130,12 @@
     scene.add(dir);
 
     buildGround();
-    buildMap();
     buildMenuPreview();
-
     bindUI();
     bindInput();
     window.addEventListener('resize', onResize);
     updateSkin();
+    loadBest();
     loop();
     dom.home.classList.remove('hidden');
   }
@@ -123,7 +147,7 @@
     renderer.setSize(window.innerWidth, window.innerHeight);
   }
 
-  // ==================== 地面（shader 挖孔） ====================
+  // ==================== 地面（shader 挖孔，跟随玩家） ====================
   function buildGround() {
     var vs = [
       'varying vec3 vW;',
@@ -134,43 +158,40 @@
       '}'
     ].join('\n');
     var fs = [
-      'uniform vec3 uHoles[8];',
+      'uniform vec3 uHoles[20];',
       'uniform int uHoleCount;',
       'varying vec3 vW;',
       'void main(){',
       '  vec2 p = vW.xz;',
-      '  for(int i=0;i<8;i++){',
+      '  for(int i=0;i<20;i++){',
       '    if(i>=uHoleCount) break;',
       '    vec2 c = uHoles[i].xy; float r = uHoles[i].z;',
       '    if(distance(p,c) < r) discard;',
       '  }',
-      '  vec2 g = abs(fract(vW.xz/10.0)-0.5);',
+      '  vec2 g = abs(fract(p/10.0)-0.5);',
       '  float line = smoothstep(0.45,0.5,max(g.x,g.y));',
       '  vec3 col = mix(vec3(0.27,0.32,0.38), vec3(0.17,0.20,0.24), line);',
-      '  float b = fract(sin(dot(floor(vW.xz/10.0),vec2(12.9898,78.233)))*43758.5453);',
+      '  float b = fract(sin(dot(floor(p/10.0),vec2(12.9898,78.233)))*43758.5453);',
       '  if(b>0.86) col = vec3(0.20,0.33,0.22);',
-      '  float edge = smoothstep(0.0,14.0, abs(p.x)-86.0);',
-      '  col = mix(col, vec3(0.10,0.13,0.17), clamp(edge,0.0,1.0));',
       '  gl_FragColor = vec4(col,1.0);',
       '}'
     ].join('\n');
     groundMat = new THREE.ShaderMaterial({
       uniforms: holeUniform, vertexShader: vs, fragmentShader: fs, side: THREE.DoubleSide
     });
-    var geo = new THREE.PlaneGeometry(CFG.MAP + 40, CFG.MAP + 40, 1, 1);
+    var geo = new THREE.PlaneGeometry(700, 700, 1, 1);
     ground = new THREE.Mesh(geo, groundMat);
     ground.rotation.x = -Math.PI / 2;
     ground.position.y = 0;
     scene.add(ground);
 
-    // 洞底（深色圆盘，放很低，营造深度）
     var bottomGeo = new THREE.CircleGeometry(1, 40);
     var bottomMat = new THREE.MeshBasicMaterial({ color: 0x05070b, side: THREE.DoubleSide });
     ground.userData.bottomGeo = bottomGeo;
     ground.userData.bottomMat = bottomMat;
   }
 
-  // ==================== 地图与物体 ====================
+  // ==================== 低多边形物体 ====================
   var geoCache = {};
   function box(w, h, d) {
     var k = 'b' + w + '_' + h + '_' + d;
@@ -199,13 +220,12 @@
     return m;
   }
 
-  // 按等级生成一个低多边形物体
   function makeProp(level, x, z) {
     var g = new THREE.Group();
     var C = LV[level].c, c0 = pick(C), c1 = pick(C), c2 = pick(C);
     var rot = rnd(0, Math.PI * 2);
     switch (level) {
-      case 0: // 路灯/消防栓/垃圾桶/行人/栅栏
+      case 0:
         switch (rndi(0, 4)) {
           case 0: part(g, cyl(0.05, 0.06, 2.2, 6), 0x555, 0, 1.1, 0); part(g, sph(0.22, 8), 0xffe9a8, 0, 2.3, 0); break;
           case 1: part(g, cyl(0.22, 0.24, 0.7, 8), 0xd0392b, 0, 0.35, 0); part(g, cyl(0.28, 0.28, 0.1, 8), 0x922, 0, 0.72, 0); break;
@@ -214,7 +234,7 @@
           default: for (var i = 0; i < 4; i++) part(g, box(0.1, 0.9, 0.1), 0x9aa, i * 0.3 - 0.45, 0.45, 0); part(g, box(1.4, 0.08, 0.08), 0x9aa, 0, 0.8, 0);
         }
         break;
-      case 1: // 长椅/灌木/小轿车/邮箱/广告牌
+      case 1:
         switch (rndi(0, 4)) {
           case 0: part(g, box(2.2, 0.18, 0.7), 0xa9743f, 0, 0.5, 0); part(g, box(2.2, 0.7, 0.15), 0xa9743f, 0, 0.85, -0.3); break;
           case 1: part(g, sph(0.9, 8), 0x4a9a4a, 0, 0.7, 0); part(g, sph(0.7, 8), 0x5caf5c, 0.5, 0.9, 0.3); break;
@@ -223,7 +243,7 @@
           default: part(g, cyl(0.08, 0.08, 2.6, 6), 0x777, -1, 1.3, 0); part(g, cyl(0.08,0.08,2.6,6),0x777,1,1.3,0); part(g, box(2.4,1.3,0.12), c1, 0, 2.4, 0);
         }
         break;
-      case 2: // 公交车/货车/大树/凉亭/平房
+      case 2:
         switch (rndi(0, 4)) {
           case 0: part(g, box(5.2, 2.2, 2.0), 0xf0a500, 0, 1.3, 0); for (var w=0;w<5;w++) part(g, box(0.7,0.8,0.05), 0x335577, -1.9+w*0.95, 1.7, 1.03); break;
           case 1: part(g, box(3.4, 1.5, 1.8), c0, -0.6, 1.0, 0); part(g, box(1.6, 1.9, 1.7), 0xeee, 1.4, 1.2, 0); break;
@@ -232,7 +252,7 @@
           default: part(g, box(5, 2.8, 4), c0, 0, 1.4, 0); part(g, cyl(3.6,3.6,0.2,4), 0x9a4a3a, 0, 2.95, 0).rotation.y=Math.PI/4;
         }
         break;
-      case 3: // 便利店/居民楼/写字楼
+      case 3:
         var h = rnd(6, 9);
         switch (rndi(0, 2)) {
           case 0: part(g, box(7, 4, 6), 0xdfe4ea, 0, 2, 0); part(g, box(7.4, 0.6, 6.4), 0xe74c3c, 0, 4.2, 0); part(g, box(4, 2.4, 0.1), 0x5dade2, 0, 2.2, 3.05); break;
@@ -240,7 +260,7 @@
           default: part(g, box(7, h+2, 7), 0x8aa0b5, 0, (h+2)/2, 0); part(g, box(7.4,0.4,7.4),0x5b6b7b,0,h+2.2,0);
         }
         break;
-      case 4: // 摩天楼/体育馆/地标
+      case 4:
         var H = rnd(14, 22);
         switch (rndi(0, 2)) {
           case 0: part(g, box(9, H, 9), c0, 0, H/2, 0); part(g, box(9.4,0.5,9.4),0x9fb3c8,0,H*0.55,0); part(g, box(9.4,0.5,9.4),0x9fb3c8,0,H*0.8,0); part(g, cyl(0.2,0.2,3,6),0xaaa,0,H+1.5,0); break;
@@ -255,42 +275,107 @@
     return g;
   }
 
-  function buildMap() {
-    var half = CFG.MAP / 2 - 6;
-    for (var i = 0; i < CFG.COUNT; i++) {
-      var r = Math.random(), acc = 0, lv = 0;
-      for (var l = 0; l < LV.length; l++) { acc += LV[l].p; if (r <= acc) { lv = l; break; } }
-      var x = rnd(-half, half), z = rnd(-half, half);
-      // 中心留空给玩家出生
-      if (Math.abs(x) < 8 && Math.abs(z) < 8) { x += 14; }
-      var g = makeProp(lv, x, z);
-      scene.add(g);
-      objects.push({ mesh: g, x: x, z: z, s: LV[lv].s, e: LV[lv].e, lv: lv, alive: true, fall: null });
+  // 难度驱动物体等级分布：等级越高，越偏向大物体（保证后期有足够食物）
+  function rollLevel() {
+    var r = Math.random();
+    // stage 提升时，把低等级占比逐步转移给高等级
+    var t = Math.min(0.45, (stage - 1) * 0.03);
+    var p0 = LV[0].p * (1 - t);
+    var p1 = LV[1].p * (1 - t * 0.5);
+    var p2 = LV[2].p + t * 0.3;
+    var p3 = LV[3].p + t * 0.35;
+    var p4 = LV[4].p + t * 0.35;
+    var total = p0 + p1 + p2 + p3 + p4;
+    var acc = 0;
+    var ps = [p0 / total, p1 / total, p2 / total, p3 / total, p4 / total];
+    for (var l = 0; l < 5; l++) { acc += ps[l]; if (r <= acc) return l; }
+    return 4;
+  }
+
+  function addObjAt(x, z, level) {
+    var g = makeProp(level, x, z);
+    scene.add(g);
+    var o = { mesh: g, x: x, z: z, s: LV[level].s, e: LV[level].e, lv: level, alive: true, fall: null };
+    objects.push(o);
+    return o;
+  }
+
+  // ==================== 区块管理 ====================
+  function chunkKey(cx, cz) { return cx + ',' + cz; }
+
+  function genChunk(cx, cz) {
+    var key = chunkKey(cx, cz);
+    if (chunks[key]) return;
+    var arr = [];
+    var baseX = cx * CFG.CHUNK, baseZ = cz * CFG.CHUNK;
+    for (var i = 0; i < CFG.PER_CHUNK; i++) {
+      var x = baseX + rnd(0, CFG.CHUNK), z = baseZ + rnd(0, CFG.CHUNK);
+      // 出生区块中心留空
+      if (cx === 0 && cz === 0 && Math.abs(x) < 7 && Math.abs(z) < 7) continue;
+      arr.push(addObjAt(x, z, rollLevel()));
     }
+    chunks[key] = { objs: arr };
+  }
+
+  function dropChunk(key) {
+    var c = chunks[key];
+    if (!c) return;
+    for (var i = 0; i < c.objs.length; i++) {
+      var o = c.objs[i];
+      if (!o.alive && !o.fall) continue;
+      // 正在下坠的也直接移除
+      scene.remove(o.mesh);
+      var idx = objects.indexOf(o);
+      if (idx >= 0) objects.splice(idx, 1);
+    }
+    delete chunks[key];
+  }
+
+  function updateChunks() {
+    var pcx = Math.floor(player.x / CFG.CHUNK), pcz = Math.floor(player.z / CFG.CHUNK);
+    var R = CFG.CHUNK_RADIUS;
+    // 生成周围区块
+    for (var dx = -R; dx <= R; dx++) {
+      for (var dz = -R; dz <= R; dz++) genChunk(pcx + dx, pcz + dz);
+    }
+    // 回收远超范围的区块
+    for (var key in chunks) {
+      if (!chunks.hasOwnProperty(key)) continue;
+      var parts = key.split(','), cx = parseInt(parts[0], 10), cz = parseInt(parts[1], 10);
+      if (Math.abs(cx - pcx) > R + 1 || Math.abs(cz - pcz) > R + 1) dropChunk(key);
+    }
+    // 地面贴着玩家（整块移动，避免边缘露出）
+    ground.position.x = pcx * CFG.CHUNK;
+    ground.position.z = pcz * CFG.CHUNK;
+  }
+
+  function clearWorld() {
+    objects.forEach(function (o) { scene.remove(o.mesh); });
+    objects = [];
+    chunks = {};
+    holes.forEach(function (h) { scene.remove(h.group); });
+    holes = [];
+    player = null;
   }
 
   // ==================== 黑洞 ====================
   function makeHole(name, color, isPlayer, x, z, personality) {
     var grp = new THREE.Group();
-    // 洞底圆盘
     var bottom = new THREE.Mesh(ground.userData.bottomGeo, ground.userData.bottomMat);
     bottom.rotation.x = -Math.PI / 2; bottom.position.y = -2.6; bottom.scale.setScalar(1);
     grp.add(bottom);
-    // 发光环
     var ring = new THREE.Mesh(
       new THREE.RingGeometry(0.86, 1.06, 48),
       new THREE.MeshBasicMaterial({ color: color, side: THREE.DoubleSide, transparent: true, opacity: 0.92 })
     );
     ring.rotation.x = -Math.PI / 2; ring.position.y = 0.03;
     grp.add(ring);
-    // 内圈暗环
     var inner = new THREE.Mesh(
       new THREE.RingGeometry(0.7, 0.88, 48),
       new THREE.MeshBasicMaterial({ color: 0x000000, side: THREE.DoubleSide, transparent: true, opacity: 0.55 })
     );
     inner.rotation.x = -Math.PI / 2; inner.position.y = 0.02;
     grp.add(inner);
-    // 名字标签
     var label = makeLabel(name, color, isPlayer);
     label.position.y = 2.2;
     grp.add(label);
@@ -325,7 +410,6 @@
     var tex = new THREE.CanvasTexture(cv);
     var sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: false }));
     sp.scale.set(7, 1.75, 1);
-    sp.userData.canvas = cv; sp.userData.tex = tex; sp.userData.text = text; sp.userData.color = color;
     return sp;
   }
 
@@ -345,26 +429,43 @@
     return s;
   }
 
+  function aiTypeFor(index) {
+    // 难度越高，激进型越多
+    var aggressiveRatio = Math.min(0.7, 0.28 + stage * 0.035);
+    var r = Math.random();
+    if (r < aggressiveRatio) return 'aggressive';
+    if (r > 0.88) return 'calm';
+    return 'normal';
+  }
+
+  function spawnAI() {
+    var idx = holes.length - 1; // 玩家是 holes[0]
+    var a = rnd(0, Math.PI * 2);
+    var d = rnd(55, 90);
+    var name = AI_NAMES[idx % AI_NAMES.length];
+    var color = AI_COLORS[idx % AI_COLORS.length];
+    var h = makeHole(name, color, false,
+      player.x + Math.cos(a) * d, player.z + Math.sin(a) * d, aiTypeFor(idx));
+    // 新 AI 给一点初始体型，避免开局被秒（随难度提升初始经验）
+    h.exp = rnd(4, 10) + stage * 1.5;
+    h.radius = radiusOf(h.exp);
+    h.score = Math.floor(h.exp * 10);
+    syncHole(h);
+    holes.push(h);
+    return h;
+  }
+
   function spawnHoles() {
-    // 清掉旧的
-    holes.forEach(function (h) { scene.remove(h.group); });
-    holes = [];
     player = makeHole('你', SKINS[skinIdx], true, 0, 0);
     holes.push(player);
-    // 位置：四周分散
-    for (var i = 0; i < CFG.AI_NUM; i++) {
-      var a = (i / CFG.AI_NUM) * Math.PI * 2 + rnd(-0.3, 0.3);
-      var d = rnd(45, 80);
-      var type = i < 2 ? 'aggressive' : i < 5 ? 'normal' : 'calm';
-      holes.push(makeHole(AI_NAMES[i], AI_COLORS[i], false, Math.cos(a) * d, Math.sin(a) * d, type));
-    }
+    for (var i = 0; i < CFG.AI_START; i++) spawnAI();
   }
 
   // ==================== 吞噬 ====================
   function startFall(obj, hole) {
     obj.fall = {
       t: 0, dur: 0.42 + obj.s * 0.012,
-      sx: obj.x, sz: obj.z, sy: 0,
+      sx: obj.x, sz: obj.z,
       cx: hole.x, cz: hole.z,
       rot: obj.mesh.rotation.y,
       obj: hole
@@ -383,7 +484,6 @@
     }
   }
 
-  // 高处物体靠近玩家时压矮，避免遮挡黑洞
   function updateOcclusion(dt) {
     var px = player.x, pz = player.z, pr = player.radius;
     for (var i = 0; i < objects.length; i++) {
@@ -394,8 +494,7 @@
       if (o.lv === 2 && d < pr + 4) want = 0.55;
       else if (o.lv === 3 && d < pr + 7) want = 0.34;
       else if (o.lv === 4 && d < pr + 11) want = 0.22;
-      var cur = o.mesh.scale.y;
-      o.mesh.scale.y = lerp(cur, want, 1 - Math.pow(0.002, dt));
+      o.mesh.scale.y = lerp(o.mesh.scale.y, want, 1 - Math.pow(0.002, dt));
     }
   }
 
@@ -407,14 +506,11 @@
       f.t += dt;
       var k = clamp(f.t / f.dur, 0, 1);
       var ease = k * k;
-      // 水平向洞心收拢
       var nx = lerp(f.sx, f.cx, ease * 0.85);
       var nz = lerp(f.sz, f.cz, ease * 0.85);
-      // Y 加速下坠
       var ny = -ease * (3.2 + f.obj.radius * 0.4);
       o.mesh.position.set(nx, ny, nz);
-      var sc = 1 - ease * 0.92;
-      o.mesh.scale.setScalar(Math.max(0.05, sc));
+      o.mesh.scale.setScalar(Math.max(0.05, 1 - ease * 0.92));
       o.mesh.rotation.y = f.rot + ease * 2.4;
       f.cx = f.obj.x; f.cz = f.obj.z;
       if (k >= 1) {
@@ -424,20 +520,16 @@
     }
   }
 
-  // 检测单个洞吞物体
   function checkEatProps(h) {
-    var r = h.radius * CFG.EAT_RATIO;
-    var r2 = r * r;
+    var r = h.radius * CFG.EAT_RATIO, r2 = r * r;
     for (var i = 0; i < objects.length; i++) {
       var o = objects[i];
-      if (!o.alive) continue;
-      if (o.s >= r) continue;
+      if (!o.alive || o.s >= r) continue;
       var dx = o.x - h.x, dz = o.z - h.z;
       if (dx * dx + dz * dz < r2) startFall(o, h);
     }
   }
 
-  // 洞吃洞
   function checkEatHoles() {
     for (var i = 0; i < holes.length; i++) {
       var a = holes[i]; if (!a.alive) continue;
@@ -446,9 +538,7 @@
         var b = holes[j]; if (!b.alive) continue;
         if (b.radius >= a.radius * CFG.EAT_RATIO) continue;
         var dx = b.x - a.x, dz = b.z - a.z;
-        if (dx * dx + dz * dz < a.radius * a.radius * 0.55) {
-          devour(a, b);
-        }
+        if (dx * dx + dz * dz < a.radius * a.radius * 0.55) devour(a, b);
       }
     }
   }
@@ -482,10 +572,10 @@
     holes.forEach(function (o) { if (o.alive) { avg += o.radius; n++; } });
     avg = n ? avg / n : 1;
     var r = Math.max(CFG.HOLE_BASE, avg * 0.5);
-    var a = rnd(0, Math.PI * 2), d = CFG.MAP / 2 - 14;
-    h.x = Math.cos(a) * d; h.z = Math.sin(a) * d;
-    h.exp = Math.max(0, (r - CFG.HOLE_BASE) / CFG.GROW);
-    h.exp = h.exp * h.exp;
+    var a = rnd(0, Math.PI * 2), d = rnd(40, 70);
+    h.x = player.x + Math.cos(a) * d;
+    h.z = player.z + Math.sin(a) * d;
+    h.exp = Math.pow((r - CFG.HOLE_BASE) / CFG.GROW, 2);
     h.radius = r;
     h.alive = true;
     h.group.visible = true;
@@ -493,27 +583,22 @@
     if (h.ai) { h.ai.state = 'forage'; h.ai.chaseT = 0; h.ai.senseT = 0; }
   }
 
-  // ==================== AI 状态机 ====================
+  // ==================== AI ====================
   function updateAI(h, dt) {
     var ai = h.ai;
     ai.senseT -= dt;
-    if (ai.senseT <= 0) {
-      ai.senseT = 0.5;
-      sense(h);
-    }
+    if (ai.senseT <= 0) { ai.senseT = 0.5; sense(h); }
 
-    var tx = ai.tx, tz = ai.tz;
-    var dx = tx - h.x, dz = tz - h.z;
+    var dx = ai.tx - h.x, dz = ai.tz - h.z;
     var dist = Math.hypot(dx, dz);
     if (dist < 0.1) { dx = Math.cos(ai.deflect); dz = Math.sin(ai.deflect); dist = 1; }
 
-    // 防卡死
     var moved = Math.hypot(h.x - ai.lastX, h.z - ai.lastZ);
     if (moved < 0.05 && dt > 0) ai.stuckT += dt; else ai.stuckT = 0;
     if (ai.stuckT > 1.5) {
       ai.deflect = rnd(0, Math.PI * 2);
-      ai.tx = clamp(h.x + Math.cos(ai.deflect) * 30, -CFG.MAP/2+8, CFG.MAP/2-8);
-      ai.tz = clamp(h.z + Math.sin(ai.deflect) * 30, -CFG.MAP/2+8, CFG.MAP/2-8);
+      ai.tx = h.x + Math.cos(ai.deflect) * 30;
+      ai.tz = h.z + Math.sin(ai.deflect) * 30;
       ai.stuckT = 0;
       dx = ai.tx - h.x; dz = ai.tz - h.z; dist = Math.hypot(dx, dz) || 1;
     }
@@ -541,13 +626,11 @@
       if (o.radius > h.radius * 1.1 && d < td) { threat = o; td = d; }
       if (o.radius < h.radius * 0.8 && d < pd && d < warn) { prey = o; pd = d; }
     }
-
-    // 佛系AI不主动追人
     if (threat) {
       ai.state = 'flee';
       var ang = Math.atan2(h.z - threat.z, h.x - threat.x);
-      ai.tx = clamp(h.x + Math.cos(ang) * 40, -CFG.MAP/2+8, CFG.MAP/2-8);
-      ai.tz = clamp(h.z + Math.sin(ang) * 40, -CFG.MAP/2+8, CFG.MAP/2-8);
+      ai.tx = h.x + Math.cos(ang) * 40;
+      ai.tz = h.z + Math.sin(ang) * 40;
     } else if (prey && ai.type !== 'calm' && (ai.type === 'aggressive' || Math.random() < 0.4)) {
       ai.state = 'chase';
       ai.chaseT = ai.type === 'aggressive' ? 4 : 2.4;
@@ -563,7 +646,6 @@
     var ai = h.ai;
     var best = null, bestScore = -1;
     var range = 34 + h.radius * 1.5;
-    // 粗采样：随机取若干物体，找可吃且高价值的
     for (var k = 0; k < 26; k++) {
       var o = objects[rndi(0, objects.length - 1)];
       if (!o || !o.alive || o.s >= h.radius * CFG.EAT_RATIO) continue;
@@ -575,15 +657,13 @@
     if (best) { ai.tx = best.x; ai.tz = best.z; ai.target = best; }
     else {
       var a = rnd(0, Math.PI * 2);
-      ai.tx = clamp(h.x + Math.cos(a) * 28, -CFG.MAP/2+8, CFG.MAP/2-8);
-      ai.tz = clamp(h.z + Math.sin(a) * 28, -CFG.MAP/2+8, CFG.MAP/2-8);
-      ai.target = null;
+      ai.tx = h.x + Math.cos(a) * 28; ai.tz = h.z + Math.sin(a) * 28; ai.target = null;
     }
   }
 
   function moveHole(h, dt) {
-    h.x = clamp(h.x + h.vx * dt, -CFG.MAP / 2 + 2, CFG.MAP / 2 - 2);
-    h.z = clamp(h.z + h.vz * dt, -CFG.MAP / 2 + 2, CFG.MAP / 2 - 2);
+    h.x += h.vx * dt;
+    h.z += h.vz * dt;
     syncHole(h);
   }
 
@@ -591,11 +671,9 @@
   var camPos = new THREE.Vector3(), camLook = new THREE.Vector3();
   function updateCamera(dt) {
     var h = player;
-    // 更陡的俯角(约60°)，减少高楼遮挡
     var dist = 17 + h.radius * 1.8;
     var height = 32 + h.radius * 2.4;
-    var tx = h.x, ty = height, tz = h.z + dist;
-    camPos.set(tx, ty, tz);
+    camPos.set(h.x, height, h.z + dist);
     var lerpK = 1 - Math.pow(0.001, dt);
     camera.position.lerp(camPos, lerpK);
     camLook.set(h.x, 0, h.z);
@@ -612,19 +690,17 @@
     dom.skinDot.style.background = hex(SKINS[skinIdx]);
     dom.skinDot.style.color = hex(SKINS[skinIdx]);
   }
-
   function killMsg(txt) {
     var d = document.createElement('div');
     d.className = 'killmsg'; d.textContent = txt;
     dom.killfeed.appendChild(d);
     setTimeout(function () { if (d.parentNode) d.parentNode.removeChild(d); }, 3000);
   }
-
   function floatText(txt, x, z, lv) {
     tmpV.set(x, 2 + lv, z).project(camera);
+    if (tmpV.z > 1) return;
     var sx = (tmpV.x * 0.5 + 0.5) * window.innerWidth;
     var sy = (-tmpV.y * 0.5 + 0.5) * window.innerHeight;
-    if (tmpV.z > 1) return;
     var d = document.createElement('div');
     d.className = 'floater'; d.textContent = txt;
     d.style.left = sx + 'px'; d.style.top = sy + 'px';
@@ -632,14 +708,13 @@
     dom.floaters.appendChild(d);
     setTimeout(function () { if (d.parentNode) d.parentNode.removeChild(d); }, 900);
   }
-
   function updateHUD() {
-    var sec = Math.max(0, Math.ceil(timeLeft));
-    dom.timer.textContent = ('0' + Math.floor(sec / 60)).slice(-2) + ':' + ('0' + (sec % 60)).slice(-2);
-    dom.timer.classList.toggle('urgent', sec <= 10);
+    dom.timer.textContent = fmtTime(elapsed);
+    dom.stageLv.textContent = stage;
+    dom.aiCount.textContent = holes.length - 1;
     dom.mySize.textContent = player.radius.toFixed(1);
     dom.myScore.textContent = player.score;
-
+    dom.bestScore.textContent = Math.max(bestScore, player.score);
     var sorted = holes.slice().sort(function (a, b) { return b.score - a.score; });
     var rows = '';
     for (var i = 0; i < Math.min(4, sorted.length); i++) {
@@ -652,51 +727,51 @@
   }
 
   function showResult() {
-    var sorted = holes.slice().sort(function (a, b) { return b.score - a.score; });
-    var rank = sorted.indexOf(player) + 1;
-    dom.finalRank.innerHTML = '第 ' + rank + ' 名<small>' + (rank === 1 ? '！冠军' : '') + '</small>';
+    saveBest();
+    dom.finalRank.textContent = '本局结束';
+    dom.finalTime.textContent = fmtTime(elapsed);
     dom.finalScore.textContent = player.score;
     dom.finalEaten.textContent = player.eaten;
     dom.finalKills.textContent = player.kills;
+    dom.finalStage.textContent = stage;
     dom.finalSize.textContent = player.radius.toFixed(1);
     dom.hud.classList.add('hidden');
     dom.result.classList.remove('hidden');
+    dom.homeBest.textContent = fmtTime(bestTime);
     gameState = 'result';
   }
 
   // ==================== 流程 ====================
   function startGame() {
     audio();
-    // 清理场景物体并重建
-    objects.forEach(function (o) { scene.remove(o.mesh); });
-    objects = [];
+    clearWorld();
     dom.floaters.innerHTML = '';
     dom.killfeed.innerHTML = '';
-    buildMap();
     spawnHoles();
-    timeLeft = (!isNaN(DEBUG_T) && DEBUG_T > 0) ? DEBUG_T : CFG.ROUND;
-    lastTick = -1;
+    updateChunks();
+    elapsed = 0;
+    stage = (!isNaN(DEBUG_STAGE) && DEBUG_STAGE > 1) ? DEBUG_STAGE : 1;
     shake = 0;
     gameState = 'play';
     dom.home.classList.add('hidden');
     dom.result.classList.add('hidden');
     dom.hud.classList.remove('hidden');
     dom.respawn.classList.add('hidden');
-    camera.position.set(0, 30, 30);
+    camera.position.set(0, 32, 18);
     updateHUD();
   }
 
   function goHome() {
+    saveBest();
     gameState = 'home';
     dom.result.classList.add('hidden');
     dom.hud.classList.add('hidden');
     dom.home.classList.remove('hidden');
+    dom.homeBest.textContent = fmtTime(bestTime);
     buildMenuPreview();
   }
 
   function buildMenuPreview() {
-    if (!holes.length) return;
-    // 主界面保留一个缓慢自转的预览洞
     if (!player) {
       player = makeHole('你', SKINS[skinIdx], true, 0, 0);
       holes.push(player);
@@ -710,8 +785,18 @@
     dom.startBtn.addEventListener('click', startGame);
     dom.againBtn.addEventListener('click', startGame);
     dom.homeBtn.addEventListener('click', goHome);
-    dom.skinPrev.addEventListener('click', function () { skinIdx = (skinIdx + SKINS.length - 1) % SKINS.length; updateSkin(); if (player && gameState === 'home') { scene.remove(player.group); holes = []; player = null; buildMenuPreview(); } });
-    dom.skinNext.addEventListener('click', function () { skinIdx = (skinIdx + 1) % SKINS.length; updateSkin(); if (player && gameState === 'home') { scene.remove(player.group); holes = []; player = null; buildMenuPreview(); } });
+    dom.endBtn.addEventListener('click', showResult);
+    function switchSkin(delta) {
+      skinIdx = (skinIdx + delta + SKINS.length) % SKINS.length;
+      updateSkin();
+      if (gameState === 'home') {
+        if (player) scene.remove(player.group);
+        holes = []; player = null;
+        buildMenuPreview();
+      }
+    }
+    dom.skinPrev.addEventListener('click', function () { switchSkin(-1); });
+    dom.skinNext.addEventListener('click', function () { switchSkin(1); });
   }
 
   function bindInput() {
@@ -736,10 +821,7 @@
       input.dx = dx / len * mag; input.dy = dy / len * mag;
       dom.joystick.querySelector('i').style.transform = 'translate(calc(-50% + ' + (input.dx*26) + 'px),calc(-50% + ' + (input.dy*26) + 'px))';
     }
-    function up() {
-      input.active = false; input.dx = 0; input.dy = 0;
-      dom.joystick.style.display = 'none';
-    }
+    function up() { input.active = false; input.dx = 0; input.dy = 0; dom.joystick.style.display = 'none'; }
     el.addEventListener('touchstart', down, { passive: false });
     el.addEventListener('touchmove', move, { passive: false });
     el.addEventListener('touchend', up);
@@ -760,12 +842,20 @@
     var dt = Math.min(clock.getDelta(), 0.05);
 
     if (gameState === 'play') {
-      timeLeft -= dt;
-      // 玩家输入：屏幕上=世界-Z，右=世界+X
+      elapsed += dt;
+      var newStage = Math.floor(elapsed / CFG.STAGE_SEC) + 1;
+      if (newStage > stage) {
+        stage = newStage;
+        sfxStage();
+        killMsg('难度提升 · 第 ' + stage + ' 阶 · 新对手加入');
+      }
+      // 按难度增加 AI
+      var wantAI = Math.min(CFG.AI_MAX, CFG.AI_START + stage - 1);
+      while (holes.length - 1 < wantAI) spawnAI();
+
       var sp = speedOf(player);
       player.vx = input.dx * sp;
       player.vz = input.dy * sp;
-      // 自动觅食（调试）
       if (AUTO) {
         var best = null, bd = 1e9;
         for (var ao = 0; ao < objects.length; ao++) {
@@ -779,12 +869,12 @@
           player.vx = Math.cos(ang) * sp; player.vz = Math.sin(ang) * sp;
         }
       }
-      // 键盘控制（外接键盘 / 调试）
       if (keys['ArrowLeft'] || keys['KeyA']) player.vx = -sp;
       if (keys['ArrowRight'] || keys['KeyD']) player.vx = sp;
       if (keys['ArrowUp'] || keys['KeyW']) player.vz = -sp;
       if (keys['ArrowDown'] || keys['KeyS']) player.vz = sp;
       moveHole(player, dt);
+      updateChunks();
 
       for (var i = 0; i < holes.length; i++) {
         var h = holes[i];
@@ -798,7 +888,6 @@
       updateCamera(dt);
       updateHUD();
 
-      // 复活
       for (var r = 0; r < holes.length; r++) {
         var v = holes[r];
         if (!v.alive) {
@@ -813,20 +902,14 @@
           }
         }
       }
-
-      // 倒计时音效
-      var sec = Math.ceil(timeLeft);
-      if (sec <= 10 && sec >= 0 && sec !== lastTick) { lastTick = sec; sfxTick(); }
-      if (timeLeft <= 0) showResult();
     } else if (gameState === 'home') {
       if (player) { player.group.rotation.y += dt * 0.15; player.group.position.x = Math.sin(clock.elapsedTime * 0.4) * 4; }
     } else if (gameState === 'result') {
       updateCamera(dt);
     }
 
-    // 更新地面洞 uniform
     var n = 0;
-    for (var q = 0; q < holes.length && n < 8; q++) {
+    for (var q = 0; q < holes.length && n < CFG.MAX_HOLES; q++) {
       var hh = holes[q];
       if (!hh.alive) continue;
       holeUniform.uHoles.value[n].set(hh.x, hh.z, hh.radius);
@@ -834,6 +917,15 @@
     }
     holeUniform.uHoleCount.value = n;
 
+    if (DEBUG && gameState === 'play') {
+      var stat = {
+        t: Math.round(elapsed), st: stage,
+        obj: objects.length, chk: Object.keys(chunks).length,
+        holes: holes.length, score: player.score, r: +player.radius.toFixed(1),
+        px: Math.round(player.x), pz: Math.round(player.z)
+      };
+      window.__hole = stat;
+    }
     renderer.render(scene, camera);
   }
 
