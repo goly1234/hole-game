@@ -1,0 +1,60 @@
+name: Build Android APK
+
+# 云端打包：推送 main 或手动触发 → 产出黑洞吞噬大作战 debug APK
+# 下载位置：仓库 Actions 页 → 对应运行 → Artifacts → hole-game-apk
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: apk-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: 安装 JDK 21（Capacitor 8 / AGP 8.13 要求）
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 21
+
+      # ubuntu-latest 镜像已预装 Android SDK（licenses 已接受），
+      # 缺失的 platform/build-tools 由 AGP 自动下载；不用 setup-android@v3（上游废弃必挂）。
+
+      - name: 构建网页（src → 单文件 index.html → www/）
+        run: |
+          npm ci
+          node build.js
+
+      - name: 同步进安卓壳工程
+        run: npx cap sync android
+
+      - name: Gradle 构建 debug APK
+        working-directory: android
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleDebug --no-daemon --stacktrace
+
+      - name: 整理产物
+        run: |
+          mkdir -p apk-output
+          cp android/app/build/outputs/apk/debug/app-debug.apk "apk-output/黑洞吞噬大作战-v${{ github.run_number }}-debug.apk"
+
+      - name: 上传 APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: hole-game-apk
+          path: apk-output/*.apk
+          if-no-files-found: error

@@ -1,0 +1,13 @@
+# Node
+node_modules/
+
+# 构建产物（CI 每次重新生成）
+www/
+/index.html
+
+# Capacitor 同步产物
+android/app/src/main/assets/public/
+
+# 系统杂项
+.DS_Store
+Thumbs.db
