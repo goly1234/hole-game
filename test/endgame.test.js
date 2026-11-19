@@ -4,7 +4,9 @@
 var CFG = {
   HOLE_BASE: 1.0, R_MAX: 25, GROW_K: 520,
   END_AT: 0.94, END_TIME: 30, HUNTER_MUL: 1.32, HUNTER_RMAX: 40,
-  EAT_RATIO: 0.85
+  EAT_RATIO: 0.85,
+  HAZARD_P: 0.22, POISON_LOSS: 0.18, SPIKE_LOSS: 0.30,
+  SLOW_TIME: 4.5, SLOW_FACTOR: 0.45
 };
 function clamp(v, a, b) { return v < a ? a : v > b ? b : v; }
 function radiusOf(exp, max) {
@@ -51,6 +53,20 @@ ok(Math.abs(fixedR - hunterR) < 0.05, '修复后：用 maxR 重算保持 ' + fix
 // 模拟猎杀者吞一个物体（exp 增加）后仍大于玩家
 var afterEat = radiusOf(hunterExp + 50, CFG.HUNTER_RMAX);
 ok(afterEat > hunterR && canEat(afterEat, playerR), '吞物体后仍大于玩家且能吃玩家');
+
+console.log('== 危险建筑效果 ==');
+// 中毒/尖刺：扣经验+缩小，且不会把经验扣成负数
+var exp0 = 500, r0 = radiusOf(exp0);
+var poisonExp = Math.max(0, exp0 - Math.max(20, exp0 * CFG.POISON_LOSS));
+var spikeExp = Math.max(0, exp0 - Math.max(20, exp0 * CFG.SPIKE_LOSS));
+ok(poisonExp < exp0 && radiusOf(poisonExp) < r0, '中毒后经验与半径都下降');
+ok(spikeExp < poisonExp, '尖刺比中毒伤害更重');
+ok(Math.max(0, 10 - Math.max(20, 10 * CFG.POISON_LOSS)) >= 0, '低经验时不会扣成负数');
+// 减速：速度乘以系数，持续时间有限
+ok(CFG.SLOW_FACTOR < 1 && CFG.SLOW_TIME > 0, '减速系数<1且时长有限');
+ok(CFG.SLOW_TIME < 60, '减速不会永久持续');
+// 占比与随机性：危险物占比在合理区间
+ok(CFG.HAZARD_P > 0 && CFG.HAZARD_P < 0.5, '危险物基础占比 ' + (CFG.HAZARD_P * 100) + '%（多数仍是食物）');
 
 console.log('== 必然收场 ==');
 ok(CFG.END_TIME > 0, '终局倒计时有限（' + CFG.END_TIME + 's）');

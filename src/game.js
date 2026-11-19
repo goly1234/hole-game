@@ -24,7 +24,20 @@
     MAX_HOLES: 20,       // shader 洞上限
     AI_START: 7,         // 初始 AI 数
     AI_MAX: 15,          // AI 上限
-    STAGE_SEC: 25        // 每存活多少秒升一级难度
+    STAGE_SEC: 25,       // 每存活多少秒升一级难度
+    HAZARD_P: 0.22,      // 危险建筑占比（随难度还会上升）
+    POISON_LOSS: 0.18,   // 中毒：损失当前经验比例
+    SPIKE_LOSS: 0.30,    // 尖刺：损失当前经验比例
+    SLOW_TIME: 4.5,      // 减速持续秒数
+    SLOW_FACTOR: 0.45    // 减速时速度倍率
+  };
+
+  // 危险建筑类型：颜色醒目、有专门外形；solid 无法吞噬，其余吞下会中招
+  var HAZARDS = {
+    solid:  { name: '加固建筑', color: 0x37474f },
+    poison: { name: '毒气站',   color: 0xb026d6 },
+    spike:  { name: '尖刺障碍', color: 0xe53935 },
+    slow:   { name: '粘液池',   color: 0xf9a825 }
   };
 
   // 物体等级：[尺寸半径, 经验, 需要洞半径, 颜色组, 基础占比]
@@ -83,7 +96,8 @@
   ['home', 'hud', 'result', 'timer', 'stageLv', 'aiCount', 'mySize', 'myScore', 'bestScore',
     'homeBest', 'boardRows', 'killfeed', 'floaters', 'respawn', 'respawnNum', 'skinDot',
     'startBtn', 'endBtn', 'skinPrev', 'skinNext', 'finalRank', 'finalTime', 'finalScore',
-    'finalEaten', 'finalKills', 'finalStage', 'finalSize', 'againBtn', 'homeBtn', 'joystick'
+    'finalEaten', 'finalKills', 'finalStage', 'finalSize', 'againBtn', 'homeBtn', 'joystick',
+    'flash', 'status'
   ].forEach(function (k) { dom[k] = $(k); });
 
   // ==================== 存档 ====================
@@ -119,6 +133,19 @@
   function sfxKill() { beep(180, 0.18, 'square', 0.10); setTimeout(function () { beep(300, 0.22, 'square', 0.09); }, 90); }
   function sfxLevel() { beep(520, 0.16, 'triangle', 0.12); setTimeout(function () { beep(780, 0.18, 'triangle', 0.1); }, 100); }
   function sfxStage() { beep(440, 0.14, 'sawtooth', 0.1); setTimeout(function () { beep(660, 0.16, 'sawtooth', 0.1); }, 120); setTimeout(function () { beep(880, 0.2, 'sawtooth', 0.1); }, 240); }
+
+  // 全屏受击闪色
+  function flashScreen(color) {
+    if (!dom.flash) return;
+    dom.flash.style.background = color;
+    dom.flash.style.opacity = '0.32';
+    dom.flash.style.transition = 'none';
+    requestAnimationFrame(function () {
+      if (!dom.flash) return;
+      dom.flash.style.transition = 'opacity .45s ease-out';
+      dom.flash.style.opacity = '0';
+    });
+  }
 
   // ==================== 初始化 ====================
   function init() {
@@ -306,10 +333,42 @@
     return 4;
   }
 
-  function addObjAt(x, z, level) {
+  // 给危险建筑加醒目警示：地面光环 + 顶部悬浮标记（颜色编码）
+  function markHazard(group, kind, size) {
+    var col = HAZARDS[kind].color;
+    var ringMat = new THREE.MeshBasicMaterial({ color: col, side: THREE.DoubleSide, transparent: true, opacity: 0.85 });
+    var ringGeo = new THREE.RingGeometry(size * 1.15, size * 1.5, 24);
+    var ring = new THREE.Mesh(ringGeo, ringMat);
+    ring.rotation.x = -Math.PI / 2;
+    ring.position.y = 0.06;
+    group.add(ring);
+    var glowGeo = new THREE.PlaneGeometry(size * 3, size * 3);
+    var glowMat = new THREE.MeshBasicMaterial({ color: col, side: THREE.DoubleSide, transparent: true, opacity: 0.2, depthWrite: false });
+    var glow = new THREE.Mesh(glowGeo, glowMat);
+    glow.rotation.x = -Math.PI / 2;
+    glow.position.y = 0.04;
+    group.add(glow);
+  }
+
+  function rollKind() {
+    var p = Math.min(0.38, CFG.HAZARD_P + (stage - 1) * 0.012);
+    if (Math.random() >= p) return 'food';
+    var r = Math.random();
+    if (r < 0.30) return 'solid';
+    if (r < 0.55) return 'poison';
+    if (r < 0.80) return 'spike';
+    return 'slow';
+  }
+
+  function addObjAt(x, z, level, kind) {
+    kind = kind || 'food';
     var g = makeProp(level, x, z);
+    if (kind !== 'food') markHazard(g, kind, LV[level].s);
     scene.add(g);
-    var o = { mesh: g, x: x, z: z, s: LV[level].s, e: LV[level].e, lv: level, alive: true, fall: null };
+    var o = {
+      mesh: g, x: x, z: z, s: LV[level].s, e: LV[level].e, lv: level,
+      kind: kind, alive: true, fall: null
+    };
     objects.push(o);
     return o;
   }
@@ -326,7 +385,11 @@
       var x = baseX + rnd(0, CFG.CHUNK), z = baseZ + rnd(0, CFG.CHUNK);
       // 出生区块中心留空
       if (cx === 0 && cz === 0 && Math.abs(x) < 7 && Math.abs(z) < 7) continue;
-      arr.push(addObjAt(x, z, rollLevel()));
+      var kind = rollKind();
+      var lv = rollLevel();
+      // 危险物偏向中小尺寸，制造"看着能吃其实是坑"的抉择
+      if (kind !== 'food' && lv >= 3 && Math.random() < 0.7) lv = rndi(0, 2);
+      arr.push(addObjAt(x, z, lv, kind));
     }
     chunks[key] = { objs: arr };
   }
@@ -399,6 +462,7 @@
     var h = {
       name: name, color: color, isPlayer: !!isPlayer, x: x, z: z,
       radius: CFG.HOLE_BASE, maxR: CFG.R_MAX, exp: 0, score: 0, eaten: 0, kills: 0,
+      slowT: 0, hurtT: 0,
       alive: true, respawn: 0, group: grp, ring: ring, bottom: bottom, label: label,
       vx: 0, vz: 0,
       ai: isPlayer ? null : {
@@ -451,6 +515,7 @@
     var s = CFG.SPEED_BASE + h.radius * CFG.SPEED_GROW;
     if (h.ai && h.ai.type === 'calm') s *= 0.78;
     if (h.ai && h.ai.type === 'aggressive') s *= 1.06;
+    if (h.slowT > 0) s *= CFG.SLOW_FACTOR;
     return s;
   }
 
@@ -548,15 +613,19 @@
     };
     obj.alive = false;
     hole.eaten++;
-    hole.exp += obj.e;
-    hole.score += obj.e * 10;
-    var nr = radiusOf(hole.exp, hole.maxR);
-    if (Math.floor(nr) > Math.floor(hole.radius)) sfxLevel();
-    hole.radius = nr;
-    sfxEat(obj.lv);
-    if (hole.isPlayer) {
-      shake = Math.min(1.2, shake + 0.12 + obj.lv * 0.16);
-      floatText('+' + obj.e * 10, obj.x, obj.z, obj.lv);
+    if (obj.kind === 'poison' || obj.kind === 'spike' || obj.kind === 'slow') {
+      applyHazard(hole, obj);
+    } else {
+      hole.exp += obj.e;
+      hole.score += obj.e * 10;
+      var nr = radiusOf(hole.exp, hole.maxR);
+      if (Math.floor(nr) > Math.floor(hole.radius)) sfxLevel();
+      hole.radius = nr;
+      sfxEat(obj.lv);
+      if (hole.isPlayer) {
+        shake = Math.min(1.2, shake + 0.12 + obj.lv * 0.16);
+        floatText('+' + obj.e * 10, obj.x, obj.z, obj.lv);
+      }
     }
   }
 
@@ -601,8 +670,39 @@
     for (var i = 0; i < objects.length; i++) {
       var o = objects[i];
       if (!o.alive || o.s >= r) continue;
+      // 加固建筑无法吞噬：绕开它，撞上去会被弹开
+      if (o.kind === 'solid') continue;
       var dx = o.x - h.x, dz = o.z - h.z;
       if (dx * dx + dz * dz < r2) startFall(o, h);
+    }
+  }
+
+  // 危险建筑效果：中毒/尖刺扣经验缩小，粘液减速；只对玩家显示完整反馈
+  function applyHazard(h, o) {
+    var kind = o.kind;
+    if (kind === 'food' || !kind) return;
+    if (kind === 'poison' || kind === 'spike') {
+      var loss = kind === 'poison' ? CFG.POISON_LOSS : CFG.SPIKE_LOSS;
+      var before = h.exp;
+      h.exp = Math.max(0, h.exp - Math.max(20, before * loss));
+      var dScore = Math.floor(before * loss * 10);
+      h.score = Math.max(0, h.score - dScore);
+      h.radius = radiusOf(h.exp, h.maxR);
+      h.hurtT = 0.5;
+      if (h.isPlayer) {
+        flashScreen(kind === 'poison' ? '#b026d6' : '#e53935');
+        floatText('-' + dScore, o.x, o.z, o.lv);
+        killMsg(kind === 'poison' ? '中毒！损失经验' : '被尖刺扎伤！');
+        shake = Math.min(1.5, shake + 0.6);
+        beep(120, 0.25, 'sawtooth', 0.14);
+      }
+    } else if (kind === 'slow') {
+      h.slowT = CFG.SLOW_TIME;
+      if (h.isPlayer) {
+        flashScreen('#f9a825');
+        killMsg('粘液缠身 · 速度下降');
+        beep(200, 0.2, 'triangle', 0.1);
+      }
     }
   }
 
@@ -680,6 +780,25 @@
     if (h.ai) { h.ai.state = 'forage'; h.ai.chaseT = 0; h.ai.senseT = 0; }
   }
 
+  // 加固建筑阻挡：把洞从 solid 上推开（玩家和 AI 都适用）
+  function resolveSolidCollision(h) {
+    if (!h.alive) return;
+    for (var i = 0; i < objects.length; i++) {
+      var o = objects[i];
+      if (!o.alive || o.kind !== 'solid') continue;
+      var dx = h.x - o.x, dz = h.z - o.z;
+      var minD = h.radius * 0.7 + o.s * 0.8;
+      var d2 = dx * dx + dz * dz;
+      if (d2 >= minD * minD) continue;
+      var d = Math.sqrt(d2) || 0.001;
+      var push = (minD - d) + 0.2;
+      h.x += dx / d * push;
+      h.z += dz / d * push;
+      if (h.isPlayer) shake = Math.min(0.5, shake + 0.05);
+    }
+    syncHole(h);
+  }
+
   // ==================== AI ====================
   function updateAI(h, dt) {
     var ai = h.ai;
@@ -753,6 +872,7 @@
     for (var k = 0; k < 26; k++) {
       var o = objects[rndi(0, objects.length - 1)];
       if (!o || !o.alive || o.s >= h.radius * CFG.EAT_RATIO) continue;
+      if (o.kind !== 'food') continue;  // AI 只找安全食物，不主动往危险物上撞
       var d = Math.hypot(o.x - h.x, o.z - h.z);
       if (d > range) continue;
       var sc = o.e / (1 + d * 0.06);
@@ -825,6 +945,10 @@
     dom.mySize.textContent = player.radius.toFixed(1);
     dom.myScore.textContent = player.score;
     dom.bestScore.textContent = Math.max(bestScore, player.score);
+    var badges = '';
+    if (player.slowT > 0) badges += '<div class="badge">粘液减速 ' + player.slowT.toFixed(1) + 's</div>';
+    if (player.hurtT > 0) badges += '<div class="badge hurt">受伤！</div>';
+    dom.status.innerHTML = badges;
     var sorted = holes.slice().sort(function (a, b) { return b.score - a.score; });
     var rows = '';
     for (var i = 0; i < Math.min(4, sorted.length); i++) {
@@ -999,6 +1123,7 @@
         for (var ao = 0; ao < objects.length; ao++) {
           var ob = objects[ao];
           if (!ob.alive || ob.s >= player.radius * CFG.EAT_RATIO) continue;
+          if (ob.kind !== 'food') continue;
           var ad = Math.hypot(ob.x - player.x, ob.z - player.z);
           if (ad < bd) { bd = ad; best = ob; }
         }
@@ -1017,7 +1142,10 @@
       for (var i = 0; i < holes.length; i++) {
         var h = holes[i];
         if (!h.alive) continue;
+        if (h.slowT > 0) h.slowT = Math.max(0, h.slowT - dt);
+        if (h.hurtT > 0) h.hurtT = Math.max(0, h.hurtT - dt);
         if (!h.isPlayer) updateAI(h, dt);
+        resolveSolidCollision(h);
         checkEatProps(h);
       }
       checkEatHoles();
@@ -1056,11 +1184,14 @@
     holeUniform.uHoleCount.value = n;
 
     if (DEBUG && gameState === 'play') {
+      var hz = { food: 0, solid: 0, poison: 0, spike: 0, slow: 0 };
+      for (var hzI = 0; hzI < objects.length; hzI++) hz[objects[hzI].kind || 'food']++;
       var stat = {
         t: Math.round(elapsed), st: stage,
         obj: objects.length, chk: Object.keys(chunks).length,
         holes: holes.length, score: player.score, r: +player.radius.toFixed(1),
-        px: Math.round(player.x), pz: Math.round(player.z)
+        px: Math.round(player.x), pz: Math.round(player.z),
+        hazard: hz, slow: +player.slowT.toFixed(1)
       };
       window.__hole = stat;
     }
